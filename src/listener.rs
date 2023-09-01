@@ -1,44 +1,51 @@
 use std::collections::HashMap;
-use std::io;
+use std::fmt::Formatter;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use futures_util::{SinkExt, StreamExt};
+use futures::{SinkExt, StreamExt};
+use futures_enum::{Stream, Sink};
 use serde::{Deserialize, Serialize};
 use serde_json;
 use serde_json::json;
+use tokio::net::TcpStream;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::task::JoinHandle;
-use tokio_tungstenite::connect_async;
+use tokio_tungstenite::{client_async_tls, connect_async, MaybeTlsStream, WebSocketStream};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::error::Error as WsError;
 use tokio_tungstenite::tungstenite::Message;
 
-/*
-#[derive(Serialize, Deserialize)]
-struct GameDataMode {
-    max_players: u8,
-    crystal_value: f32,
-    crystal_drop: f32,
-    map_size: u16,
-    map_density: Option<f32>,
-    lives: u8,
-    max_level: u8,
-    friendly_colors: u8,
-    close_time: u16,
-    close_number: u16,
-    map_name: String,
-    unlisted: bool,
-    survival_time: u16,
-    survival_level: u8,
-    starting_ship: u32,
-    starting_ship_maxed: bool,
-    asteroids_strength: f32,
-    friction_ratio: f32,
-    speed_mod: f32,
-    rcs_toggle: bool,
-    weapon_drop: f32,
-    mines_self_destroy: bool,
-    mines_destroy_delay: u32
-}*/
+use crate::proxy::{InnerProxy, ProxyStream};
+
+enum ListenerError {
+    SocketError(WsError),
+    CannotJoin(u16),
+    InvalidVersion,
+}
+
+impl std::fmt::Display for ListenerError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ListenerError::SocketError(err) => {
+                write!(f, "{}", err)
+            }
+            ListenerError::CannotJoin(id) => {
+                write!(f, "Cannot join {}", id)
+            }
+            ListenerError::InvalidVersion => {
+                write!(f, "Invalid join packet version")
+            }
+        }
+    }
+}
+
+impl From<tokio_tungstenite::tungstenite::Error> for ListenerError {
+    fn from(err: tokio_tungstenite::tungstenite::Error) -> Self {
+        ListenerError::SocketError(err)
+    }
+}
+
+type Result<T> = std::result::Result<T, ListenerError>;
 
 #[derive(Serialize, Deserialize)]
 struct GameDataTeamStation {
@@ -129,28 +136,87 @@ struct GenericJSONMessage {
 
 pub struct Listener {
     state_rx: broadcast::Receiver<Vec<u8>>,
-    json_req_tx: mpsc::Sender<oneshot::Sender<String>>,
-    handle: JoinHandle<io::Result<()>>
+    json_req_tx: mpsc::Sender<(Option<u8>, oneshot::Sender<String>)>,
+    handle: JoinHandle<Result<()>>,
 }
 
+impl Listener {
+    pub fn new(address: String, game_id: u16, join_packet_name: String, proxy: Option<String>) -> Self {
+        let (blob_tx, blob_rx) = broadcast::channel::<Vec<u8>>(1);
+        let (json_req_tx, json_req_rx) = mpsc::channel::<(Option<u8>, oneshot::Sender<String>)>(1);
+        Listener {
+            state_rx: blob_rx,
+            json_req_tx,
+            handle: tokio::spawn(listener_main(address, proxy, game_id, blob_tx, json_req_rx, join_packet_name)),
+        }
+    }
 
-pub fn new(address: String, game_id: u16, join_packet_name: String) -> Listener {
-    let (blob_tx, blob_rx) = broadcast::channel::<Vec<u8>>(1);
-    let (json_req_tx, json_req_rx) = mpsc::channel::<oneshot::Sender<String>>(1);
-    return Listener {
-        state_rx: blob_rx,
-        json_req_tx,
-        handle: tokio::spawn(listener_main(address, game_id, blob_tx, json_req_rx, join_packet_name))
-    };
+    pub fn subscribe(&self) -> broadcast::Receiver<Vec<u8>> {
+        self.state_rx.resubscribe()
+    }
+
+    pub async fn get_name(&self, id: u8) -> Option<String> {
+        if self.handle.is_finished() {
+            return None;
+        }
+        let (tx, rx) = oneshot::channel::<String>();
+        if let Err(_) = self.json_req_tx.send((Some(id), tx)).await {
+            return None;
+        }
+        match rx.await {
+            Ok(json) => {
+                Some(json)
+            }
+            Err(_) => {
+                None
+            }
+        }
+    }
+
+    pub async fn get_game_state_json(&self) -> String {
+        if self.handle.is_finished() {
+            return String::from("{\"error\":\"no_system\"}");
+        }
+        let (tx, rx) = oneshot::channel::<String>();
+        if let Err(_) = self.json_req_tx.send((None, tx)).await {
+            return String::from("{\"error\":\"no_system\"}");
+        }
+        match rx.await {
+            Ok(json) => {
+                json
+            }
+            Err(_) => {
+                String::from("{\"error\":\"no_system\"}")
+            }
+        }
+    }
+
+    fn is_finished(&self) -> bool {
+        self.handle.is_finished()
+    }
 }
 
+#[derive(Stream, Sink)]
+enum MaybeProxiedStream {
+    Proxied(WebSocketStream<MaybeTlsStream<ProxyStream>>),
+    Unproxied(WebSocketStream<MaybeTlsStream<TcpStream>>)
+}
 
-async fn listener_main(address: String, game_id: u16, blob_tx: broadcast::Sender<Vec<u8>>, mut json_req_rx: mpsc::Receiver<oneshot::Sender<String>>, join_packet_name: String) -> io::Result<()> {
-    let mut request = address.into_client_request().unwrap();
+async fn listener_main(address: String, proxy: Option<String>, game_id: u16, blob_tx: broadcast::Sender<Vec<u8>>, mut json_req_rx: mpsc::Receiver<(Option<u8>, oneshot::Sender<String>)>, join_packet_name: String) -> Result<()> {
+    let mut request = address.clone().into_client_request()?;
     let headers = request.headers_mut();
     headers.insert("Origin", "https://starblast.io/".parse().unwrap());
 
-    let (socket, _) = connect_async(request).await.expect("Failure connecting");
+    let socket: MaybeProxiedStream = match proxy {
+        Some(proxy_address) => {
+            let proxy = InnerProxy::from_proxy_str(proxy_address.as_str()).expect("Bad proxy config");
+            let tcp_stream = proxy.connect_async(address.as_str()).await.expect("Failed to create proxy stream");
+            MaybeProxiedStream::Proxied(client_async_tls(request, tcp_stream).await.expect("Failure connecting").0)
+        }
+        None => {
+            MaybeProxiedStream::Unproxied(connect_async(request).await.expect("Failure connecting").0)
+        }
+    };
 
     let (mut socket_tx, mut socket_rx) = socket.split();
 
@@ -165,15 +231,57 @@ async fn listener_main(address: String, game_id: u16, blob_tx: broadcast::Sender
             "bonus": true,
             "create": false
         }
-    }).to_string())).await.expect("failure sending join packet");
+    }).to_string())).await?;
 
-    let mut welcome_msg: Option<GameData> = None;
-    let mut map_size: u16 = 0;
+    let mut welcome_msg: GameData;
 
     let time_start = SystemTime::now();
     let since_the_epoch = time_start
         .duration_since(UNIX_EPOCH)
         .expect("Time went backwards");
+
+    match socket_rx.next().await {
+        None => {
+            return Ok(());
+        }
+        Some(res) => {
+            let message = res?;
+            match message {
+                Message::Text(msg) => {
+                    let msg: GenericJSONMessage = serde_json::from_str(msg.as_str()).expect("failed parsing msg");
+                    match msg.name.as_str() {
+                        "welcome" => {
+                            // This is if the welcome message only contains the version number
+                            // meaning our join packet name is invalid
+                            if msg.data.len() < 45 {
+                                return Err(ListenerError::InvalidVersion);
+                            }
+                            welcome_msg = serde_json::from_str(msg.data.as_str()).expect("failed parsing msg");
+                            welcome_msg.players = Some(HashMap::new());
+                            welcome_msg.obtained = Some(since_the_epoch.as_secs() * 1000 + since_the_epoch.subsec_nanos() as u64 / 1_000_000);
+
+                            let mode_id = welcome_msg.mode.id.as_str();
+                            let root_mode = welcome_msg.mode.root_mode.clone();
+                            if !(mode_id == "team" || (mode_id == "modding" && root_mode == Some("team".parse().unwrap()))) {
+                                for i in 1u8..=255 {
+                                    socket_tx.send(Message::Text(json!({
+                                        "name": "get_name",
+                                        "data": {
+                                            "id": i
+                                        }
+                                    }).to_string())).await?;
+                                }
+                            }
+                        }
+                        _ => {
+                            return Ok(());
+                        }
+                    }
+                }
+                _ => return Ok(())
+            }
+        }
+    }
 
     loop {
         tokio::select! {
@@ -183,7 +291,7 @@ async fn listener_main(address: String, game_id: u16, blob_tx: broadcast::Sender
                         return Ok(());
                     }
                     Some(res) => {
-                        let message = res.expect("Error pulling message");
+                        let message = res?;
                         match message {
                             Message::Close(_) => {
                                 return Ok(())
@@ -191,44 +299,24 @@ async fn listener_main(address: String, game_id: u16, blob_tx: broadcast::Sender
                             Message::Text(msg) => {
                                 let msg: GenericJSONMessage = serde_json::from_str(msg.as_str()).expect("failed parsing msg");
                                 match msg.name.as_str() {
-                                    "welcome" => {
-                                        welcome_msg = Some(serde_json::from_str(msg.data.as_str()).expect("failed parsing msg"));
-                                        welcome_msg.as_mut().unwrap().players = Some(HashMap::new());
-                                        welcome_msg.as_mut().unwrap().obtained = Some(since_the_epoch.as_secs() * 1000 + since_the_epoch.subsec_nanos() as u64 / 1_000_000);
-
-                                        let mode_id = welcome_msg.as_ref().unwrap().mode.id.as_str();
-                                        let root_mode = welcome_msg.as_ref().unwrap().mode.root_mode.clone();
-                                        if !(mode_id == "team" || (mode_id == "modding" && root_mode == Some("team".parse().unwrap()))) {
-                                            for i in 1u8..=255 {
-                                                socket_tx.send(Message::Text(json!({
-                                                    "name": "get_name",
-                                                    "data": {
-                                                        "id": i
-                                                    }
-                                                }).to_string())).await.expect("failure sending get_name");
-                                            }
-                                        }
-                                        map_size = welcome_msg.as_ref().unwrap().mode.map_size;
-
-                                    }
                                     "player_name" => {
                                         let player_name: GameDataPlayer = serde_json::from_str(msg.data.as_str()).expect("failed parsing msg");
-                                        if let Some(player) = welcome_msg.as_mut().unwrap().players.as_mut().unwrap().get_mut(&player_name.id) {
+                                        if let Some(player) = welcome_msg.players.as_mut().unwrap().get_mut(&player_name.id) {
                                             player.player_name = player_name.player_name;
                                             player.custom = player_name.custom;
                                             player.hue = player_name.hue;
                                             player.friendly = player_name.friendly;
                                         } else {
-                                            welcome_msg.as_mut().unwrap().players.as_mut().unwrap().insert(player_name.id, player_name);
+                                            welcome_msg.players.as_mut().unwrap().insert(player_name.id, player_name);
                                         }
                                     }
                                     "shipgone" => {
                                         let id: u8 = msg.data.parse().unwrap();
-                                        welcome_msg.as_mut().unwrap().players.as_mut().unwrap().remove(&id);
+                                        welcome_msg.players.as_mut().unwrap().remove(&id);
                                     }
                                     "cannot_join" => {
-                                        socket_tx.close().await.expect("error closing socket");
-                                        return Ok(());
+                                        socket_tx.close().await?;
+                                        return Err(ListenerError::CannotJoin(game_id));
                                     }
                                     _ => {}
                                 }
@@ -239,6 +327,7 @@ async fn listener_main(address: String, game_id: u16, blob_tx: broadcast::Sender
                                         let len = buf.len();
                                         let mut encoded_byte_length = 1 + (15 * (len >> 3));
                                         let mut packet = vec![1u8; encoded_byte_length];
+                                        let map_size = welcome_msg.mode.map_size;
 
                                         for i in (2..len).step_by(8) {
                                             let id = buf[i];
@@ -249,7 +338,7 @@ async fn listener_main(address: String, game_id: u16, blob_tx: broadcast::Sender
                                             let alive: bool = buf[i+3] & 1 != 0;
                                             encoded_byte_length += 15;
 
-                                            let players = welcome_msg.as_mut().unwrap().players.as_mut().unwrap();
+                                            let players = welcome_msg.players.as_mut().unwrap();
                                             if players.contains_key(&id) {
                                                 let player = players.get_mut(&id).unwrap();
                                                 player.id = id;
@@ -276,7 +365,7 @@ async fn listener_main(address: String, game_id: u16, blob_tx: broadcast::Sender
                                                     "data": {
                                                         "id": id
                                                     }
-                                                }).to_string())).await.expect("failure sending get_name");
+                                                }).to_string())).await?;
                                             }
 
                                             let d = ((i >> 3) * 15) + 1;
@@ -304,7 +393,7 @@ async fn listener_main(address: String, game_id: u16, blob_tx: broadcast::Sender
                                         blob_tx.send(packet).expect("failed to send ship info byte vec");
                                     }
                                     0xcd => {
-                                        let friendly_colors = welcome_msg.as_ref().unwrap().mode.friendly_colors as usize;
+                                        let friendly_colors = welcome_msg.mode.friendly_colors as usize;
                                         let size = buf.len() / friendly_colors;
                                         let mut packet = vec![2u8; friendly_colors*5 + 1];
                                         for i in 0..friendly_colors {
@@ -316,7 +405,7 @@ async fn listener_main(address: String, game_id: u16, blob_tx: broadcast::Sender
                                                 ((buf[o+4] as u32) << 16) |
                                                 ((buf[o+5] as u32) << 24);
 
-                                            let teams = welcome_msg.as_mut().unwrap().mode.teams.as_mut().unwrap();
+                                            let teams = welcome_msg.mode.teams.as_mut().unwrap();
                                             teams[i].open = Some(open);
                                             teams[i].level = Some(level);
                                             teams[i].crystals = Some(crystals);
@@ -341,10 +430,28 @@ async fn listener_main(address: String, game_id: u16, blob_tx: broadcast::Sender
                     }
                 }
             }
-            maybe_sender = json_req_rx.recv() => {
-                match maybe_sender {
-                    Some(sender) => {
-                        sender.send(serde_json::to_string(&welcome_msg).expect("failed constructing json")).expect("dropped oneshot receiver");
+            maybe_req = json_req_rx.recv() => {
+                match maybe_req {
+                    Some(req) => {
+                        match req.0 {
+                            Some(id) => {
+                                let maybe_player = welcome_msg.players.as_ref().unwrap().get(&id);
+                                if let Some(player) = maybe_player {
+                                    req.1.send(json!({
+                                        "name": "player_name",
+                                        "data": player
+                                    }).to_string()).expect("dropped oneshot receiver");
+                                } else {
+                                    req.1.send(json!({
+                                        "name": "no_player",
+                                        "data": &id
+                                    }).to_string()).expect("dropped oneshot receiver");
+                                }
+                            }
+                            None => {
+                                req.1.send(serde_json::to_string(&welcome_msg).expect("failed constructing json")).expect("dropped oneshot receiver");
+                            }
+                        }
                     }
                     None => {
                         return Ok(());

@@ -7,7 +7,7 @@ edition = "2021"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
-warp = "0.3"
+hyper-tungstenite = "0.11.1"
 tokio-tungstenite = {version = "0.20", features = ["default", "native-tls"]}
 reqwest = "0.11"
 serde_json = "1.0"
@@ -15,4 +15,10 @@ serde = { version = "1.0", features = ["derive"] }
 regex = "1.9"
 
 futures-util = "0.3"
-data-view = "5.1.0"
+futures-enum = "0.1"
+futures-core = "0.3"
+futures = "0.3"
+
+url = "2.4.0"
+tokio-socks = "0.5.1"
+base64 = "0.21.2"

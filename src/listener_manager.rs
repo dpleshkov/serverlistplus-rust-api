@@ -1,67 +1,28 @@
-use futures_util::StreamExt;
+use futures_util::{SinkExt, StreamExt};
 use crate::listener;
-use crate::http_utils;
-use warp::ws::WebSocket;
+use crate::http_utils::{get_sim_status, get_join_packet_name};
 use tokio::sync::{mpsc};
 use serde::{Deserialize, Serialize};
 use serde_json;
 use serde_json::json;
 use std::collections::HashMap;
+use std::io;
+use crate::listener::Listener;
+use std::sync::{Arc, Mutex, RwLock};
+use hyper_tungstenite::{HyperWebsocket};
+use hyper_tungstenite::hyper::upgrade::Upgraded;
+use hyper_tungstenite::tungstenite::{Error, Message, WebSocket};
+use tokio::task::JoinHandle;
+use tokio_tungstenite::WebSocketStream;
 
-#[derive(Deserialize)]
-struct MessageData {
-    id: String
+
+struct ListenerManager {
+    handle: JoinHandle<()>
 }
 
-#[derive(Deserialize)]
-struct SocketMessage {
-    name: String,
-    data: MessageData
-}
+type Listeners = HashMap<String, Listener>;
 
-async fn manage_ws(mut ws: WebSocket) {
-    loop {
-        match ws.next().await {
-            None => {
-                return;
-            }
-            Some(maybe_message) => {
-                let message = maybe_message.expect("websocket error");
-                if message.is_close() {
-                    return;
-                } else if message.is_text() {
-                    let maybe_msg = serde_json::from_str::<SocketMessage>(&message.to_str().unwrap());
-                    if maybe_msg.is_err() {
-                        ws.close().await.expect("can't close ws????");
-                        return;
-                    }
-                    let msg = maybe_msg.unwrap();
-                    if msg.name == "subscribe" {
-
-                    }
-                }
-            }
-        }
-    }
-}
-
-async fn manager(mut ws_rx: mpsc::Receiver<WebSocket>) {
-    loop {
-        match ws_rx.recv().await {
-            None => {
-                return;
-            }
-            Some(ws) => {
-                tokio::spawn(manage_ws(ws));
-            }
-        }
-    }
-}
-
-pub async fn start() -> mpsc::Sender<WebSocket> {
-    let (ws_tx, ws_rx) = mpsc::channel::<WebSocket>(1);
-
-    tokio::spawn(manager(ws_rx));
-
-    return ws_tx;
+async fn listener_manager_task() {
+    let mut listeners: Listeners = HashMap::new();
+    loop {}
 }
