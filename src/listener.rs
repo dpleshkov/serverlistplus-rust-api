@@ -17,13 +17,13 @@ use tokio_tungstenite::tungstenite::Message;
 
 use crate::proxy::{InnerProxy, ProxyStream};
 
-pub enum ListenerResponse {
+enum ListenerResponse {
     Receiver(broadcast::Receiver<Vec<u8>>),
     Json(String),
     None
 }
 
-pub enum ListenerRequest {
+enum ListenerRequest {
     Subscribe,
     GetName(u8),
     GetState
@@ -164,7 +164,7 @@ impl Listener {
         self.tx.clone()
     }
 
-    pub async fn req(&self, request: ListenerRequest) -> Option<ListenerResponse> {
+    async fn req(&self, request: ListenerRequest) -> Option<ListenerResponse> {
         if self.handle.is_finished() {
             return None;
         }

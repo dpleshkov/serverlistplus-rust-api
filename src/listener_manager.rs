@@ -1,46 +1,34 @@
-use futures_util::{SinkExt, StreamExt};
-use crate::listener;
-use tokio::sync::{broadcast, mpsc, oneshot};
-use serde::{Deserialize, Serialize};
-use serde_json;
-use serde_json::json;
 use std::collections::HashMap;
-use std::io;
-use std::mem::forget;
-use crate::listener::{Listener, ListenerResponse, ListenerRequest};
-use std::sync::{Arc, Mutex, RwLock};
-use hyper_tungstenite::{HyperWebsocket};
-use hyper_tungstenite::hyper::upgrade::Upgraded;
-use hyper_tungstenite::tungstenite::{Error, Message, WebSocket};
-use tokio::task::JoinHandle;
-use reqwest;
-use tokio_tungstenite::WebSocketStream;
-use crate::http_utils::{get_sim_status, get_join_packet_name, to_wss_address};
-use tokio::time::sleep;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use reqwest;
+use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::task::JoinHandle;
+use tokio::time::sleep;
+
+use crate::http_utils::{get_join_packet_name, get_sim_status, to_wss_address};
+use crate::listener::Listener;
 
 pub enum ManagerResponse {
     Receiver(broadcast::Receiver<Vec<u8>>),
     Json(String),
-    Listener(Listener),
+    Listener(Arc<Listener>),
     None
 }
 
 pub enum ManagerRequest {
-    Subscribe(u16),
-    GetName(u16, u8),
-    GetState(u16),
-    GetListener(u16)
+    GetState(String),
+    GetListener(String)
 }
 
 pub struct ListenerManager {
     handle: JoinHandle<()>,
-    tx: mpsc::Sender<(ListenerRequest, oneshot::Sender<ListenerResponse>)>
+    tx: mpsc::Sender<(ManagerRequest, oneshot::Sender<ManagerResponse>)>
 }
 
 impl ListenerManager {
     pub fn new() -> Self {
-        let (tx, rx) = mpsc::channel::<(ListenerRequest, oneshot::Sender<ListenerResponse>)>(8);
+        let (tx, rx) = mpsc::channel::<(ManagerRequest, oneshot::Sender<ManagerResponse>)>(8);
         let handle = tokio::spawn(listener_manager_task(rx));
         return ListenerManager {
             handle,
@@ -48,8 +36,12 @@ impl ListenerManager {
         }
     }
 
-    async fn get_listener(&self, id: u16) -> Option<Arc<Listener>> {
-        if let Some(ListenerResponse::L(id)) = self.request()
+    pub async fn get_listener(&self, id: String) -> Option<Arc<Listener>> {
+        if let Some(ManagerResponse::Listener(listener)) = self.request(ManagerRequest::GetListener(id)).await {
+            Some(listener)
+        } else {
+            None
+        }
     }
 
     async fn request(&self, req: ManagerRequest) -> Option<ManagerResponse> {
@@ -57,7 +49,7 @@ impl ListenerManager {
             return None;
         }
 
-        let (tx, rx) = oneshot::channel::<ListenerResponse>();
+        let (tx, rx) = oneshot::channel::<ManagerResponse>();
 
         if let Err(_) = self.tx.send((req, tx)).await {
             return None;
@@ -71,15 +63,6 @@ impl ListenerManager {
                 None
             }
         }
-    }
-
-    pub async fn subscribe(&self, id: u16) -> Option<broadcast::Receiver<Vec<u8>>> {
-        if let Some(res) = self.request(ManagerRequest::Subscribe(id)).await {
-            if let ManagerResponse::Receiver(receiver) = res {
-                return Some(receiver);
-            }
-        }
-        None
     }
 }
 
@@ -120,6 +103,43 @@ async fn listener_manager_task(rx: mpsc::Receiver<(ManagerRequest, oneshot::Send
     }
 }
 
-async fn listener_signaling_task(rx: mpsc::Receiver<(ManagerRequest, oneshot::Sender<ManagerResponse>)>, listeners: Arc<Mutex<HashMap<String, Listener>>>) {
-
+async fn listener_signaling_task(mut rx: mpsc::Receiver<(ManagerRequest, oneshot::Sender<ManagerResponse>)>, listeners: Arc<Mutex<HashMap<String, Arc<Listener>>>>) {
+    loop {
+        match rx.recv().await {
+            None => {
+                return;
+            }
+            Some(req) => {
+                match req.0 {
+                    ManagerRequest::GetListener(id) => {
+                        let guard = listeners.lock().expect("Failed locking listeners");
+                        if let Some(listener) = guard.get(&id) {
+                            // ignore result of sending it back
+                            let _ = req.1.send(ManagerResponse::Listener(Arc::clone(listener)));
+                        } else {
+                            let _ = req.1.send(ManagerResponse::None);
+                        }
+                    }
+                    ManagerRequest::GetState(id) => {
+                        // Might be a more elegant way to do this with more restructuring done
+                        let mut maybe_listener = None;
+                        let mut output = ManagerResponse::None;
+                        {
+                            let guard = listeners.lock().expect("Failed locking listeners");
+                            if let Some(listener) = guard.get(&id) {
+                                // ignore result of sending it back
+                                maybe_listener = Some(Arc::clone(listener));
+                            }
+                        }
+                        if let Some(listener) = maybe_listener {
+                            if let Some(state) = listener.get_game_state_json().await {
+                                output = ManagerResponse::Json(state);
+                            }
+                        }
+                        let _ = req.1.send(output);
+                    }
+                }
+            }
+        }
+    }
 }
