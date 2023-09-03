@@ -3,7 +3,7 @@ use std::fmt::Formatter;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use futures::{SinkExt, StreamExt};
-use futures_enum::{Stream, Sink};
+use futures_enum::{Sink, Stream};
 use serde::{Deserialize, Serialize};
 use serde_json;
 use serde_json::json;
@@ -16,6 +16,18 @@ use tokio_tungstenite::tungstenite::error::Error as WsError;
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::proxy::{InnerProxy, ProxyStream};
+
+pub enum ListenerResponse {
+    Receiver(broadcast::Receiver<Vec<u8>>),
+    Json(String),
+    None
+}
+
+pub enum ListenerRequest {
+    Subscribe,
+    GetName(u8),
+    GetState
+}
 
 enum ListenerError {
     SocketError(WsError),
@@ -135,37 +147,37 @@ struct GenericJSONMessage {
 }
 
 pub struct Listener {
-    state_rx: broadcast::Receiver<Vec<u8>>,
-    json_req_tx: mpsc::Sender<(Option<u8>, oneshot::Sender<String>)>,
+    tx: mpsc::Sender<(ListenerRequest, oneshot::Sender<ListenerResponse>)>,
     handle: JoinHandle<Result<()>>,
 }
 
 impl Listener {
     pub fn new(address: String, game_id: u16, join_packet_name: String, proxy: Option<String>) -> Self {
-        let (blob_tx, blob_rx) = broadcast::channel::<Vec<u8>>(1);
-        let (json_req_tx, json_req_rx) = mpsc::channel::<(Option<u8>, oneshot::Sender<String>)>(1);
+        let (tx, rx) = mpsc::channel::<(ListenerRequest, oneshot::Sender<ListenerResponse>)>(16);
         Listener {
-            state_rx: blob_rx,
-            json_req_tx,
-            handle: tokio::spawn(listener_main(address, proxy, game_id, blob_tx, json_req_rx, join_packet_name)),
+            tx,
+            handle: tokio::spawn(listener_main(address, proxy, game_id, rx, join_packet_name)),
         }
     }
 
-    pub fn subscribe(&self) -> broadcast::Receiver<Vec<u8>> {
-        self.state_rx.resubscribe()
+    pub fn get_tx(&self) -> mpsc::Sender<(ListenerRequest, oneshot::Sender<ListenerResponse>)> {
+        self.tx.clone()
     }
 
-    pub async fn get_name(&self, id: u8) -> Option<String> {
+    pub async fn req(&self, request: ListenerRequest) -> Option<ListenerResponse> {
         if self.handle.is_finished() {
             return None;
         }
-        let (tx, rx) = oneshot::channel::<String>();
-        if let Err(_) = self.json_req_tx.send((Some(id), tx)).await {
+
+        let (tx, rx) = oneshot::channel::<ListenerResponse>();
+
+        if let Err(_) = self.tx.send((request, tx)).await {
             return None;
         }
+
         match rx.await {
-            Ok(json) => {
-                Some(json)
+            Ok(res) => {
+                Some(res)
             }
             Err(_) => {
                 None
@@ -173,25 +185,34 @@ impl Listener {
         }
     }
 
-    pub async fn get_game_state_json(&self) -> String {
-        if self.handle.is_finished() {
-            return String::from("{\"error\":\"no_system\"}");
-        }
-        let (tx, rx) = oneshot::channel::<String>();
-        if let Err(_) = self.json_req_tx.send((None, tx)).await {
-            return String::from("{\"error\":\"no_system\"}");
-        }
-        match rx.await {
-            Ok(json) => {
-                json
-            }
-            Err(_) => {
-                String::from("{\"error\":\"no_system\"}")
+    pub async fn subscribe(&self) -> Option<broadcast::Receiver<Vec<u8>>> {
+        if let Some(res) = self.req(ListenerRequest::Subscribe).await {
+            if let ListenerResponse::Receiver(receiver) = res {
+                return Some(receiver);
             }
         }
+        None
     }
 
-    fn is_finished(&self) -> bool {
+    pub async fn get_name(&self, id: u8) -> Option<String> {
+        if let Some(res) = self.req(ListenerRequest::GetName(id)).await {
+            if let ListenerResponse::Json(data) = res {
+                return Some(data);
+            }
+        }
+        None
+    }
+
+    pub async fn get_game_state_json(&self) -> Option<String> {
+        if let Some(res) = self.req(ListenerRequest::GetState).await {
+            if let ListenerResponse::Json(data) = res {
+                return Some(data);
+            }
+        }
+        None
+    }
+
+    pub fn is_finished(&self) -> bool {
         self.handle.is_finished()
     }
 }
@@ -202,7 +223,7 @@ enum MaybeProxiedStream {
     Unproxied(WebSocketStream<MaybeTlsStream<TcpStream>>)
 }
 
-async fn listener_main(address: String, proxy: Option<String>, game_id: u16, blob_tx: broadcast::Sender<Vec<u8>>, mut json_req_rx: mpsc::Receiver<(Option<u8>, oneshot::Sender<String>)>, join_packet_name: String) -> Result<()> {
+async fn listener_main(address: String, proxy: Option<String>, game_id: u16, mut rx: mpsc::Receiver<(ListenerRequest, oneshot::Sender<ListenerResponse>)>, join_packet_name: String) -> Result<()> {
     let mut request = address.clone().into_client_request()?;
     let headers = request.headers_mut();
     headers.insert("Origin", "https://starblast.io/".parse().unwrap());
@@ -218,6 +239,7 @@ async fn listener_main(address: String, proxy: Option<String>, game_id: u16, blo
         }
     };
 
+    let (blob_tx, _) = broadcast::channel::<Vec<u8>>(16);
     let (mut socket_tx, mut socket_rx) = socket.split();
 
     socket_tx.send(Message::Text(json!({
@@ -430,26 +452,29 @@ async fn listener_main(address: String, proxy: Option<String>, game_id: u16, blo
                     }
                 }
             }
-            maybe_req = json_req_rx.recv() => {
+            maybe_req = rx.recv() => {
                 match maybe_req {
                     Some(req) => {
                         match req.0 {
-                            Some(id) => {
+                            ListenerRequest::GetState => {
+                                req.1.send(ListenerResponse::Json(serde_json::to_string(&welcome_msg).expect("failed constructing json")));
+                            }
+                            ListenerRequest::Subscribe => {
+                                req.1.send(ListenerResponse::Receiver(blob_tx.subscribe()));
+                            }
+                            ListenerRequest::GetName(id) => {
                                 let maybe_player = welcome_msg.players.as_ref().unwrap().get(&id);
                                 if let Some(player) = maybe_player {
-                                    req.1.send(json!({
+                                    req.1.send(ListenerResponse::Json(json!({
                                         "name": "player_name",
                                         "data": player
-                                    }).to_string()).expect("dropped oneshot receiver");
+                                    }).to_string()));
                                 } else {
-                                    req.1.send(json!({
+                                    req.1.send(ListenerResponse::Json(json!({
                                         "name": "no_player",
                                         "data": &id
-                                    }).to_string()).expect("dropped oneshot receiver");
+                                    }).to_string()));
                                 }
-                            }
-                            None => {
-                                req.1.send(serde_json::to_string(&welcome_msg).expect("failed constructing json")).expect("dropped oneshot receiver");
                             }
                         }
                     }

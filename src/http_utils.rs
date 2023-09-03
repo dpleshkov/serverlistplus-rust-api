@@ -1,3 +1,4 @@
+use futures_util::StreamExt;
 use serde_json;
 use reqwest;
 use reqwest::{Client};
@@ -26,7 +27,7 @@ pub struct Location {
     pub(crate) modding: Option<bool>
 }
 
-pub async fn get_sim_status(optional_client: Option<Client>) -> io::Result<Vec<Location>> {
+pub async fn get_sim_status(optional_client: Option<&Client>) -> io::Result<Vec<Location>> {
     let res;
     if let Some(client) = optional_client {
         res = client.get("https://starblast.io/simstatus.json").send().await;
@@ -39,7 +40,7 @@ pub async fn get_sim_status(optional_client: Option<Client>) -> io::Result<Vec<L
     return Ok(sim_status);
 }
 
-pub async fn get_join_packet_name(optional_client: Option<Client>) -> io::Result<String> {
+pub async fn get_join_packet_name(optional_client: Option<&Client>) -> io::Result<String> {
     let res;
     if let Some(client) = optional_client {
         res = client.get("https://starblast.io/").send().await;
@@ -55,4 +56,12 @@ pub async fn get_join_packet_name(optional_client: Option<Client>) -> io::Result
     let packet_name_untrimmed = &body[packet_name_start+7..packet_name_start+15];
     let packet_name = packet_name_untrimmed.split("\"").next().unwrap();
     return Ok(packet_name.parse().unwrap());
+}
+
+pub fn to_wss_address(ip: &String) -> String {
+    let s: Vec<&str> = ip.split(':').collect();
+    let addr: Vec<&str> = s[0].split('.').collect();
+    let port = s[1];
+
+    return format!("wss://{}-{}-{}-{}.starblast.io:{}/", addr[0], addr[1], addr[2], addr[3], port);
 }

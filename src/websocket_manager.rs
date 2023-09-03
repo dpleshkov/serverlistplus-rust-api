@@ -5,8 +5,12 @@ use hyper_tungstenite::HyperWebsocket;
 use hyper_tungstenite::hyper::upgrade::Upgraded;
 use hyper_tungstenite::tungstenite::{Error, Message};
 use serde_json;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::WebSocketStream;
+use serde::{Deserialize};
+use crate::listener::{ListenerRequest, ListenerResponse, Listener};
+
+use crate::listener_manager::ListenerManager;
 
 #[derive(Deserialize)]
 struct MessageData {
@@ -19,19 +23,33 @@ struct SocketMessage {
     data: MessageData
 }
 
-async fn manage_ws(mut ws: WebSocketStream<Upgraded>, listeners: Arc<RwLock<Listeners>>) -> Result<(), Error> {
+async fn pull_subscribe_message(next: Option<Result<Message, Error>>, listeners: Arc<ListenerManager>) -> Option<Listener> {
+    if let Some(result) = next {
+        if let Ok(message) = result {
+            if let Message::Text(text) = message {
+                if let Ok(subscribe_message) = serde_json::from_str::<SocketMessage>(text.as_str()) {
+                    if let Some(listener) = listeners.
+                }
+            }
+
+        }
+    }
+}
+async fn manage_ws(mut ws: WebSocketStream<Upgraded>, listeners: Arc<ListenerManager>) -> Result<(), Error> {
     let (mut ws_tx, mut ws_rx) = ws.split();
 
+    let listener_rx;
     match ws_rx.next().await {
         None => {
             return Ok(());
         }
         Some(res) => {
-            if let Message::Text(msg) = res? {
+            if let Message::Text(data) = res? {
+                if let Ok(msg) = serde_json::from_str::<SocketMessage>(data.as_str()) {
+                    if msg.name.as_str() == "subscribe" {
 
-            } else {
-                ws_tx.close().await?;
-                return Ok(());
+                    }
+                }
             }
         }
     }
@@ -51,26 +69,4 @@ async fn manage_ws(mut ws: WebSocketStream<Upgraded>, listeners: Arc<RwLock<List
             }
         }
     }
-}
-
-async fn manager(mut ws_rx: mpsc::Receiver<HyperWebsocket>) {
-    loop {
-        match ws_rx.recv().await {
-            None => {
-                return;
-            }
-            Some(ws) => {
-                // tokio::spawn(manage_ws(ws));
-            }
-        }
-    }
-}
-
-pub async fn start() -> mpsc::Sender<HyperWebsocket> {
-    let (ws_tx, ws_rx) = mpsc::channel::<HyperWebsocket>(1);
-
-
-    // tokio::spawn(manager(ws_rx));
-
-    return ws_tx;
 }
