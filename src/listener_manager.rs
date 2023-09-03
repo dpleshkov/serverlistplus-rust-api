@@ -88,7 +88,7 @@ async fn listener_manager_task(rx: mpsc::Receiver<(ManagerRequest, oneshot::Send
             for location in sim_status {
                 for system in location.systems {
                     let id = format!("{}@{}", system.id, location.address);
-                    if !guard.contains_key(&id) {
+                    if system.open && !system.survival && !guard.contains_key(&id) {
                         // TODO: implement proxy selection
                         println!("Putting new listener into {}", id);
                         guard.insert(id, Arc::new(Listener::new(to_wss_address(&location.address), system.id, join_packet_name.clone(), None)));

@@ -36,7 +36,7 @@ async fn pull_subscribe_message(next: Option<Result<Message, Error>>, listeners:
     }
     None
 }
-async fn manage_ws(mut ws: WebSocketStream<Upgraded>, listeners: Arc<ListenerManager>) -> Result<(), Error> {
+pub async fn manage_ws(ws: WebSocketStream<Upgraded>, listeners: Arc<ListenerManager>) -> Result<(), Error> {
     let (mut ws_tx, mut ws_rx) = ws.split();
 
     // Might be a more elegant way to write this out

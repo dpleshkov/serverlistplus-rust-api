@@ -6,7 +6,7 @@ use futures::{SinkExt, StreamExt};
 use futures_enum::{Sink, Stream};
 use serde::{Deserialize, Serialize};
 use serde_json;
-use serde_json::json;
+use serde_json::{json, Value};
 use tokio::net::TcpStream;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -143,7 +143,7 @@ struct WelcomeMessage {
 #[derive(Deserialize)]
 struct GenericJSONMessage {
     name: String,
-    data: String,
+    data: Value,
 }
 
 pub struct Listener {
@@ -160,7 +160,7 @@ impl Listener {
         }
     }
 
-    pub fn get_tx(&self) -> mpsc::Sender<(ListenerRequest, oneshot::Sender<ListenerResponse>)> {
+    fn get_tx(&self) -> mpsc::Sender<(ListenerRequest, oneshot::Sender<ListenerResponse>)> {
         self.tx.clone()
     }
 
@@ -270,20 +270,25 @@ async fn listener_main(address: String, proxy: Option<String>, game_id: u16, mut
             let message = res?;
             match message {
                 Message::Text(msg) => {
+                    if msg.as_str() == "{\"name\":\"cannot_join\"}" {
+                        println!("Cannot join {}", game_id);
+                        return Err(ListenerError::CannotJoin(game_id));
+                    }
                     let msg: GenericJSONMessage = serde_json::from_str(msg.as_str()).expect("failed parsing msg");
                     match msg.name.as_str() {
                         "welcome" => {
                             // This is if the welcome message only contains the version number
                             // meaning our join packet name is invalid
-                            if msg.data.len() < 45 {
+                            if msg.data.as_object().unwrap().len() < 2 {
                                 return Err(ListenerError::InvalidVersion);
                             }
-                            welcome_msg = serde_json::from_str(msg.data.as_str()).expect("failed parsing msg");
+                            welcome_msg = serde_json::from_value(msg.data).expect("failed parsing msg");
                             welcome_msg.players = Some(HashMap::new());
                             welcome_msg.obtained = Some(since_the_epoch.as_secs() * 1000 + since_the_epoch.subsec_nanos() as u64 / 1_000_000);
 
                             let mode_id = welcome_msg.mode.id.as_str();
                             let root_mode = welcome_msg.mode.root_mode.clone();
+                            println!("Connection successful to {}", game_id);
                             if !(mode_id == "team" || (mode_id == "modding" && root_mode == Some("team".parse().unwrap()))) {
                                 for i in 1u8..=255 {
                                     socket_tx.send(Message::Text(json!({
@@ -310,19 +315,21 @@ async fn listener_main(address: String, proxy: Option<String>, game_id: u16, mut
             next = socket_rx.next() => {
                 match next {
                     None => {
+                        println!("End of stream for {}", game_id);
                         return Ok(());
                     }
                     Some(res) => {
                         let message = res?;
                         match message {
                             Message::Close(_) => {
+                                println!("Connection closed to {}", game_id);
                                 return Ok(())
                             }
                             Message::Text(msg) => {
                                 let msg: GenericJSONMessage = serde_json::from_str(msg.as_str()).expect("failed parsing msg");
                                 match msg.name.as_str() {
                                     "player_name" => {
-                                        let player_name: GameDataPlayer = serde_json::from_str(msg.data.as_str()).expect("failed parsing msg");
+                                        let player_name: GameDataPlayer = serde_json::from_value(msg.data).expect("failed parsing msg");
                                         if let Some(player) = welcome_msg.players.as_mut().unwrap().get_mut(&player_name.id) {
                                             player.player_name = player_name.player_name;
                                             player.custom = player_name.custom;
@@ -333,7 +340,7 @@ async fn listener_main(address: String, proxy: Option<String>, game_id: u16, mut
                                         }
                                     }
                                     "shipgone" => {
-                                        let id: u8 = msg.data.parse().unwrap();
+                                        let id: u8 = msg.data.as_u64().unwrap() as u8;
                                         welcome_msg.players.as_mut().unwrap().remove(&id);
                                     }
                                     "cannot_join" => {
@@ -412,7 +419,9 @@ async fn listener_main(address: String, proxy: Option<String>, game_id: u16, mut
                                             packet[d+13] = (p).to_le_bytes()[0];
                                             packet[d+14] = (p).to_le_bytes()[1];
                                         }
-                                        blob_tx.send(packet).expect("failed to send ship info byte vec");
+                                        if blob_tx.receiver_count() > 0 {
+                                            blob_tx.send(packet).expect("failed to send ship info byte vec");
+                                        }
                                     }
                                     0xcd => {
                                         let friendly_colors = welcome_msg.mode.friendly_colors as usize;
@@ -442,7 +451,9 @@ async fn listener_main(address: String, proxy: Option<String>, game_id: u16, mut
                                             packet[i*5+4] = buf[o+4];
                                             packet[i*5+5] = buf[o+5];
                                         }
-                                        blob_tx.send(packet).expect("failed to send team info byte vec");
+                                        if blob_tx.receiver_count() > 0 {
+                                            blob_tx.send(packet).expect("failed to send team info byte vec");
+                                        }
                                     }
                                     _ => {}
                                 }
@@ -457,23 +468,20 @@ async fn listener_main(address: String, proxy: Option<String>, game_id: u16, mut
                     Some(req) => {
                         match req.0 {
                             ListenerRequest::GetState => {
-                                req.1.send(ListenerResponse::Json(serde_json::to_string(&welcome_msg).expect("failed constructing json")));
+                                let _ = req.1.send(ListenerResponse::Json(serde_json::to_string(&welcome_msg).expect("failed constructing json")));
                             }
                             ListenerRequest::Subscribe => {
-                                req.1.send(ListenerResponse::Receiver(blob_tx.subscribe()));
+                                let _ = req.1.send(ListenerResponse::Receiver(blob_tx.subscribe()));
                             }
                             ListenerRequest::GetName(id) => {
                                 let maybe_player = welcome_msg.players.as_ref().unwrap().get(&id);
                                 if let Some(player) = maybe_player {
-                                    req.1.send(ListenerResponse::Json(json!({
+                                    let _ = req.1.send(ListenerResponse::Json(json!({
                                         "name": "player_name",
                                         "data": player
                                     }).to_string()));
                                 } else {
-                                    req.1.send(ListenerResponse::Json(json!({
-                                        "name": "no_player",
-                                        "data": &id
-                                    }).to_string()));
+                                    let _ = req.1.send(ListenerResponse::None);
                                 }
                             }
                         }

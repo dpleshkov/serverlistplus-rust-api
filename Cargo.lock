@@ -978,6 +978,7 @@ dependencies = [
  "futures-core",
  "futures-enum",
  "futures-util",
+ "hyper",
  "hyper-tungstenite",
  "regex",
  "reqwest",
