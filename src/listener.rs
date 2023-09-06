@@ -20,6 +20,7 @@ use crate::proxy::{InnerProxy, ProxyStream};
 enum ListenerResponse {
     Receiver(broadcast::Receiver<Vec<u8>>),
     Json(String),
+    GameState(GameData),
     None
 }
 
@@ -59,12 +60,12 @@ impl From<tokio_tungstenite::tungstenite::Error> for ListenerError {
 
 type Result<T> = std::result::Result<T, ListenerError>;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 struct GameDataTeamStation {
     phase: f32,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 struct GameDataTeam {
     hue: u16,
     station: GameDataTeamStation,
@@ -78,7 +79,7 @@ struct GameDataTeam {
     ecp_count: Option<u8>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 struct GameDataPlayerCustom {
     badge: String,
     finish: String,
@@ -86,7 +87,7 @@ struct GameDataPlayerCustom {
     hue: u16,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 struct GameDataPlayer {
     id: u8,
     hue: Option<u16>,
@@ -101,7 +102,7 @@ struct GameDataPlayer {
     alive: Option<bool>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 struct GameDataModeSimplified {
     map_size: u16,
     friendly_colors: u8,
@@ -111,7 +112,7 @@ struct GameDataModeSimplified {
     root_mode: Option<String>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 struct ApiData {
     live: bool,
     provider: String,
@@ -120,8 +121,8 @@ struct ApiData {
     version: String,
 }
 
-#[derive(Serialize, Deserialize)]
-struct GameData {
+#[derive(Serialize, Deserialize, Clone)]
+pub struct GameData {
     version: u8,
     seed: u16,
     servertime: u32,
@@ -132,6 +133,7 @@ struct GameData {
     obtained: Option<u64>,
     players: Option<HashMap<u8, GameDataPlayer>>,
     api: Option<ApiData>,
+    name: String
 }
 
 #[derive(Serialize, Deserialize)]
@@ -158,10 +160,6 @@ impl Listener {
             tx,
             handle: tokio::spawn(listener_main(address, proxy, game_id, rx, join_packet_name)),
         }
-    }
-
-    fn get_tx(&self) -> mpsc::Sender<(ListenerRequest, oneshot::Sender<ListenerResponse>)> {
-        self.tx.clone()
     }
 
     async fn req(&self, request: ListenerRequest) -> Option<ListenerResponse> {
@@ -203,9 +201,9 @@ impl Listener {
         None
     }
 
-    pub async fn get_game_state_json(&self) -> Option<String> {
+    pub async fn get_game_state(&self) -> Option<GameData> {
         if let Some(res) = self.req(ListenerRequest::GetState).await {
-            if let ListenerResponse::Json(data) = res {
+            if let ListenerResponse::GameState(data) = res {
                 return Some(data);
             }
         }
@@ -288,8 +286,8 @@ async fn listener_main(address: String, proxy: Option<String>, game_id: u16, mut
 
                             let mode_id = welcome_msg.mode.id.as_str();
                             let root_mode = welcome_msg.mode.root_mode.clone();
-                            println!("Connection successful to {}", game_id);
                             if !(mode_id == "team" || (mode_id == "modding" && root_mode == Some("team".parse().unwrap()))) {
+                                println!("Connection successful to {}. Using generic logic", game_id);
                                 for i in 1u8..=255 {
                                     socket_tx.send(Message::Text(json!({
                                         "name": "get_name",
@@ -298,6 +296,8 @@ async fn listener_main(address: String, proxy: Option<String>, game_id: u16, mut
                                         }
                                     }).to_string())).await?;
                                 }
+                            } else {
+                                println!("Connection successful to {}. Using team logic", game_id);
                             }
                         }
                         _ => {
@@ -309,6 +309,13 @@ async fn listener_main(address: String, proxy: Option<String>, game_id: u16, mut
             }
         }
     }
+
+    welcome_msg.api = Some(ApiData {
+        live: true,
+        provider: String::from("https://starblast.dankdmitron.dev/api"),
+        type_: String::from("rich"),
+        version: String::from("2.2")
+    });
 
     loop {
         tokio::select! {
@@ -360,10 +367,14 @@ async fn listener_main(address: String, proxy: Option<String>, game_id: u16, mut
 
                                         for i in (2..len).step_by(8) {
                                             let id = buf[i];
-                                            let x: f32 = (buf[i+1] as f32) / 128f32 * (map_size as f32);
-                                            let y: f32 = (buf[i+2] as f32) / 128f32 * (map_size as f32);
+                                            // is likely a more elegant way to do this im missing
+                                            let rx = if buf[i+1] > 127 {-(!buf[i+1] as i8)} else {buf[i+1] as i8};
+                                            let ry = if buf[i+2] > 127 {-(!buf[i+2] as i8)} else {buf[i+2] as i8};
+
+                                            let x: f32 = ((rx as f32)) / 128f32 * (map_size as f32) * 5f32;
+                                            let y: f32 = ((ry as f32)) / 128f32 * (map_size as f32) * 5f32;
                                             let score: u32 = (buf[i+4] as u32) + ((buf[i+5] as u32) << 8) + ((buf[i+6] as u32) << 16);
-                                            let ship: u16 = 100 * (1 + ((buf[i + 3] as u16) >> 5 & 7)) + 1 + (buf[i+4] as u16);
+                                            let ship: u16 = 100 * (1 + ((buf[i + 3] as u16) >> 5 & 7)) + 1 + (buf[i+7] as u16);
                                             let alive: bool = buf[i+3] & 1 != 0;
                                             encoded_byte_length += 15;
 
@@ -414,7 +425,7 @@ async fn listener_main(address: String, proxy: Option<String>, game_id: u16, mut
 
                                             let mut p = ship;
                                             if alive {
-                                                p = p & (1 << 15);
+                                                p = p | (1 << 15);
                                             }
                                             packet[d+13] = (p).to_le_bytes()[0];
                                             packet[d+14] = (p).to_le_bytes()[1];
@@ -468,7 +479,7 @@ async fn listener_main(address: String, proxy: Option<String>, game_id: u16, mut
                     Some(req) => {
                         match req.0 {
                             ListenerRequest::GetState => {
-                                let _ = req.1.send(ListenerResponse::Json(serde_json::to_string(&welcome_msg).expect("failed constructing json")));
+                                let _ = req.1.send(ListenerResponse::GameState(welcome_msg.clone()));
                             }
                             ListenerRequest::Subscribe => {
                                 let _ = req.1.send(ListenerResponse::Receiver(blob_tx.subscribe()));

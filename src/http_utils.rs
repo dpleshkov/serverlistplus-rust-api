@@ -1,11 +1,11 @@
-use futures_util::StreamExt;
 use serde_json;
 use reqwest;
 use reqwest::{Client};
-use serde::{Deserialize};
+use serde::{Deserialize, Serialize};
 use tokio::io;
 
-#[derive(Deserialize)]
+// TODO: remove unnecessary Clone trait
+#[derive(Deserialize, Serialize, Clone)]
 pub struct System {
     pub(crate) name: String,
     pub(crate) id: u16,
@@ -15,10 +15,11 @@ pub struct System {
     pub(crate) open: bool,
     pub(crate) survival: bool,
     pub(crate) time: u32,
-    pub(crate) criminal_activity: u8
+    pub(crate) criminal_activity: u8,
+    pub(crate) mod_id: Option<String>
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize, Clone)]
 pub struct Location {
     pub(crate) location: String,
     pub(crate) address: String,
@@ -27,7 +28,7 @@ pub struct Location {
     pub(crate) modding: Option<bool>
 }
 
-pub async fn get_sim_status(optional_client: Option<&Client>) -> io::Result<Vec<Location>> {
+pub async fn get_sim_status(optional_client: Option<&Client>) -> Vec<Location> {
     let res;
     if let Some(client) = optional_client {
         res = client.get("https://starblast.io/simstatus.json").send().await;
@@ -36,8 +37,8 @@ pub async fn get_sim_status(optional_client: Option<&Client>) -> io::Result<Vec<
     }
     let body = res.expect("Failure fetching simstatus.json").text()
         .await.expect("Failure parsing simstatus response");
-    let sim_status: Vec<Location> = serde_json::from_str(&body)?;
-    return Ok(sim_status);
+    let sim_status: Vec<Location> = serde_json::from_str(&body).expect("Failed parsing simstatus.json");
+    return sim_status;
 }
 
 pub async fn get_join_packet_name(optional_client: Option<&Client>) -> io::Result<String> {

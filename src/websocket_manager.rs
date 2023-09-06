@@ -5,7 +5,7 @@ use hyper_tungstenite::hyper::upgrade::Upgraded;
 use hyper_tungstenite::tungstenite::{Error, Message};
 use serde::Deserialize;
 use serde_json;
-use serde_json::json;
+use serde_json::{json, Value};
 use tokio_tungstenite::WebSocketStream;
 
 use crate::listener::Listener;
@@ -13,7 +13,7 @@ use crate::listener_manager::ListenerManager;
 
 #[derive(Deserialize)]
 struct MessageData {
-    id: String
+    id: Value
 }
 
 #[derive(Deserialize)]
@@ -27,7 +27,7 @@ async fn pull_subscribe_message(next: Option<Result<Message, Error>>, listeners:
         if let Ok(message) = result {
             if let Message::Text(text) = message {
                 if let Ok(subscribe_message) = serde_json::from_str::<SocketMessage>(text.as_str()) {
-                    if let Some(listener) = listeners.get_listener(subscribe_message.data.id).await {
+                    if let Some(listener) = listeners.get_listener(String::from(subscribe_message.data.id.as_str().unwrap_or(""))).await {
                         return Some(listener);
                     }
                 }
@@ -52,12 +52,13 @@ pub async fn manage_ws(ws: WebSocketStream<Upgraded>, listeners: Arc<ListenerMan
     }
     let mut listener_rx = maybe_listener_rx.unwrap();
 
-    let maybe_game_state = listener.get_game_state_json().await;
+    let maybe_game_state = listener.get_game_state().await;
     if maybe_game_state.is_none() {
         return Ok(());
     }
     let game_state = maybe_game_state.unwrap();
 
+    // TODO: get rid of silly json serialization and then deserialization here
     ws_tx.send(Message::Text(json!({
         "name": "mode_info",
         "data": game_state
@@ -71,14 +72,20 @@ pub async fn manage_ws(ws: WebSocketStream<Upgraded>, listeners: Arc<ListenerMan
                         return Ok(());
                     }
                     Some(res) => {
+                        println!("Received msg");
                         if let Message::Text(data) = res? {
+                            println!("Received text msg: {}", data);
                             if let Ok(msg) = serde_json::from_str::<SocketMessage>(data.as_str()) {
+                                println!("{}", msg.name);
                                 if msg.name.as_str() == "get_name" {
-                                    let id: u8 = msg.data.id.parse().unwrap_or(0);
+                                    println!("Received get_name");
+                                    let id: u8 = msg.data.id.as_u64().unwrap_or(0) as u8;
                                     if let Some(player) = listener.get_name(id).await {
                                         ws_tx.send(Message::Text(player)).await?;
                                     }
                                 }
+                            } else {
+                                println!("Error deserializing");
                             }
                         }
                     }
