@@ -66,3 +66,24 @@ pub fn to_wss_address(ip: &String) -> String {
 
     return format!("wss://{}-{}-{}-{}.starblast.io:{}/", addr[0], addr[1], addr[2], addr[3], port);
 }
+
+pub fn translate_color(hue: u16) -> String {
+    if hue < 20 {
+        return "Red".parse().unwrap();
+    } else if hue >= 20 && hue < 40 {
+        return "Orange".parse().unwrap();
+    } else if hue >= 40 && hue < 70 {
+        return "Yellow".parse().unwrap();
+    } else if hue >= 70 && hue < 140 {
+        return "Green".parse().unwrap();
+    } else if hue >= 140 && hue < 170 {
+        return "Teal".parse().unwrap();
+    } else if hue >= 170 && hue < 270 {
+        return "Blue".parse().unwrap();
+    } else if hue >= 270 && hue < 300 {
+        return "Purple".parse().unwrap();
+    } else if hue >= 300 && hue < 330 {
+        return "Pink".parse().unwrap();
+    }
+    return "Red".parse().unwrap();
+}

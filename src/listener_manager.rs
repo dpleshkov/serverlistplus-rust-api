@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use reqwest;
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::sleep;
 
@@ -10,8 +10,6 @@ use crate::http_utils::{get_join_packet_name, get_sim_status, to_wss_address, Lo
 use crate::listener::{GameData, Listener};
 
 pub enum ManagerResponse {
-    Receiver(broadcast::Receiver<Vec<u8>>),
-    Json(String),
     Listener(Arc<Listener>),
     SimStatus(Vec<Location>),
     GameState(GameData),

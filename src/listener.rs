@@ -14,6 +14,7 @@ use tokio_tungstenite::{client_async_tls, connect_async, MaybeTlsStream, WebSock
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::error::Error as WsError;
 use tokio_tungstenite::tungstenite::Message;
+use crate::http_utils::translate_color;
 
 use crate::proxy::{InnerProxy, ProxyStream};
 
@@ -298,6 +299,9 @@ async fn listener_main(address: String, proxy: Option<String>, game_id: u16, mut
                                 }
                             } else {
                                 println!("Connection successful to {}. Using team logic", game_id);
+                                for team in welcome_msg.mode.teams.as_mut().unwrap() {
+                                    team.color = Some(translate_color(team.hue));
+                                }
                             }
                         }
                         _ => {
@@ -314,7 +318,7 @@ async fn listener_main(address: String, proxy: Option<String>, game_id: u16, mut
         live: true,
         provider: String::from("https://starblast.dankdmitron.dev/api"),
         type_: String::from("rich"),
-        version: String::from("2.2")
+        version: String::from("2.3")
     });
 
     loop {
@@ -451,6 +455,9 @@ async fn listener_main(address: String, proxy: Option<String>, game_id: u16, mut
                                             teams[i].open = Some(open);
                                             teams[i].level = Some(level);
                                             teams[i].crystals = Some(crystals);
+                                            if teams[i].color.is_none() {
+                                                teams[i].color = Some(translate_color(teams[i].hue));
+                                            }
 
                                             let mut a = level;
                                             if open {
@@ -465,6 +472,7 @@ async fn listener_main(address: String, proxy: Option<String>, game_id: u16, mut
                                         if blob_tx.receiver_count() > 0 {
                                             blob_tx.send(packet).expect("failed to send team info byte vec");
                                         }
+                                        compute_redundant_info(&mut welcome_msg);
                                     }
                                     _ => {}
                                 }
@@ -503,5 +511,24 @@ async fn listener_main(address: String, proxy: Option<String>, game_id: u16, mut
                 }
             }
         }
+    }
+}
+
+// Compute ease-of-access things like total team score and ECP counts for easy API access
+// Panics if game_data is not actually for a team-based game
+fn compute_redundant_info(game_data: &mut GameData) {
+    let mut total_team_scores: Vec<u32> = vec![0; game_data.mode.friendly_colors as usize];
+    let mut ecp_counts: Vec<u8> = vec![0; game_data.mode.friendly_colors as usize];
+
+    for player in game_data.players.as_mut().unwrap().values() {
+        total_team_scores[player.friendly.unwrap_or(0) as usize] += player.score.unwrap_or(0);
+        if player.custom.is_some() {
+            ecp_counts[player.friendly.unwrap_or(0) as usize] += 1;
+        }
+    }
+
+    for i in 0..game_data.mode.friendly_colors as usize {
+        game_data.mode.teams.as_mut().unwrap()[i].ecp_count = Some(ecp_counts[i]);
+        game_data.mode.teams.as_mut().unwrap()[i].total_score = Some(total_team_scores[i]);
     }
 }
