@@ -31,17 +31,34 @@ pub struct Location {
 
 // TODO: eliminate dependence on reqwest
 
-pub async fn get_sim_status(optional_client: Option<&Client>) -> Vec<Location> {
+enum SimStatusError {
+    ReqwestError(reqwest::Error),
+    SerdeError(serde_json::Error)
+}
+
+impl From<reqwest::Error> for SimStatusError {
+    fn from(err: reqwest::Error) -> Self {
+        SimStatusError::ReqwestError(err)
+    }
+}
+
+impl From<serde_json::Error> for SimStatusError {
+    fn from(err: serde_json::Error) -> Self {
+        SimStatusError::SerdeError(err)
+    }
+}
+
+pub async fn get_sim_status(optional_client: Option<&Client>) -> Result<Vec<Location>, SimStatusError> {
     let res;
     if let Some(client) = optional_client {
         res = client.get("https://starblast.io/simstatus.json").send().await;
     } else {
         res = reqwest::get("https://starblast.io/simstatus.json").await;
     }
-    let body = res.expect("Failure fetching simstatus.json").text()
-        .await.expect("Failure parsing simstatus response");
-    let sim_status: Vec<Location> = serde_json::from_str(&body).expect("Failed parsing simstatus.json");
-    return sim_status;
+    let body = res?.text()
+        .await?;
+    let sim_status: Vec<Location> = serde_json::from_str(&body)?;
+    return Ok(sim_status);
 }
 
 pub async fn get_join_packet_name(optional_client: Option<&Client>) -> io::Result<String> {

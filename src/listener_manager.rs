@@ -122,7 +122,13 @@ async fn listener_manager_task(rx: mpsc::Receiver<(ManagerRequest, oneshot::Send
     loop {
         println!("Checking listeners...");
 
-        let mut sim_status = get_sim_status(Some(&client)).await;
+        let mut sim_status_res = get_sim_status(Some(&client)).await;
+        while sim_status_res.is_err() {
+            println!("Error fetching simstatus.json. Retrying...");
+            sim_status_res = get_sim_status(Some(&client)).await;
+        }
+
+        let mut sim_status = sim_status_res.unwrap();
 
         // Remove all listeners that have expired
         {
