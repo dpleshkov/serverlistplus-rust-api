@@ -15,14 +15,14 @@ pub enum ManagerResponse {
     SimStatus(Vec<Location>),
     GameState(GameData),
     NewListenerResult(ListenerAdditionResponse),
-    None
+    None,
 }
 
 pub enum ManagerRequest {
     GetState(String),
     GetListener(String),
     GetSimStatus,
-    AddListener(u16, String)
+    AddListener(u16, String),
 }
 
 pub enum ListenerAdditionResponse {
@@ -30,12 +30,12 @@ pub enum ListenerAdditionResponse {
     Success,
     CannotJoin,
     AlreadyExists,
-    BadFormat
+    BadFormat,
 }
 
 pub struct ListenerManager {
     handle: JoinHandle<()>,
-    tx: mpsc::Sender<(ManagerRequest, oneshot::Sender<ManagerResponse>)>
+    tx: mpsc::Sender<(ManagerRequest, oneshot::Sender<ManagerResponse>)>,
 }
 
 impl ListenerManager {
@@ -44,8 +44,8 @@ impl ListenerManager {
         let handle = tokio::spawn(listener_manager_task(rx, optional_proxies));
         return ListenerManager {
             handle,
-            tx
-        }
+            tx,
+        };
     }
 
     pub async fn get_listener(&self, id: String) -> Option<Arc<Listener>> {
@@ -100,6 +100,31 @@ impl ListenerManager {
             }
         }
     }
+}
+
+fn try_add(id: &String, state: &GameData, locations: &mut Vec<Location>) -> bool {
+    let addr = String::from(id.split('@').collect::<Vec<&str>>()[1]);
+    for location in locations.iter_mut() {
+        if location.address == *addr {
+            let now = get_ms_since_epoch();
+            dbg!(state.obtained);
+            dbg!(now);
+            location.systems.push(System {
+                name: state.name.clone(),
+                id: state.systemid,
+                mode: state.mode.id.clone(),
+                players: if let Some(p) = state.players.as_ref() { p.len() as u8 } else { 0 },
+                unlisted: state.mode.unlisted,
+                open: true,
+                survival: false,
+                time: if let Some(t) = state.obtained { (state.servertime + (now - t) as u32) / 1000 } else { 0 },
+                criminal_activity: 0,
+                mod_id: None,
+            });
+            return true;
+        }
+    }
+    return false;
 }
 
 async fn listener_manager_task(rx: mpsc::Receiver<(ManagerRequest, oneshot::Sender<ManagerResponse>)>, optional_proxies: Option<Vec<String>>) {
@@ -157,30 +182,6 @@ async fn listener_manager_task(rx: mpsc::Receiver<(ManagerRequest, oneshot::Send
         }
         // Remove all expired custom listeners
         let cl: Vec<(String, Arc<Listener>)>;
-        let try_add = |id: &String, state: &GameData, locations: &mut Vec<Location>| -> bool {
-            let addr = String::from(id.split('@').collect::<Vec<&str>>()[1]);
-            for location in locations.iter_mut() {
-                if location.address == *addr {
-                    let now = get_ms_since_epoch();
-                    dbg!(state.obtained);
-                    dbg!(now);
-                    location.systems.push(System {
-                        name: state.name.clone(),
-                        id: state.systemid,
-                        mode: state.mode.id.clone(),
-                        players: if let Some(p) = state.players.as_ref() { p.len() as u8 } else { 0 },
-                        unlisted: state.mode.unlisted,
-                        open: true,
-                        survival: false,
-                        time: if let Some(t) = state.obtained { (state.servertime + (now - t) as u32) / 1000 } else { 0 },
-                        criminal_activity: 0,
-                        mod_id: None
-                    });
-                    return true;
-                }
-            }
-            return false;
-        };
         {
             let mut custom_listeners_ = custom_listeners.lock().expect("Couldn't lock listeners");
             let keys: Vec<String> = custom_listeners_.keys().cloned().filter(|l| custom_listeners_.get(l).unwrap().is_finished()).collect();
@@ -203,7 +204,7 @@ async fn listener_manager_task(rx: mpsc::Receiver<(ManagerRequest, oneshot::Send
                         address: String::from(id.split('@').collect::<Vec<&str>>()[1]),
                         current_players: 0,
                         systems: Vec::new(),
-                        modding: None
+                        modding: None,
                     };
                     custom_locations.push(new_location);
                     try_add(id, &state, &mut custom_locations);
@@ -220,13 +221,11 @@ async fn listener_manager_task(rx: mpsc::Receiver<(ManagerRequest, oneshot::Send
         }
 
         sleep(Duration::from_secs(15)).await;
-
-
     }
 }
 
 async fn listener_signaling_task(mut rx: mpsc::Receiver<(ManagerRequest, oneshot::Sender<ManagerResponse>)>, listeners: Arc<Mutex<HashMap<String, Arc<Listener>>>>, custom_listeners: Arc<Mutex<HashMap<String, Arc<Listener>>>>, mut sim_status_rx: mpsc::Receiver<Vec<Location>>, join_packet_name: String) {
-    let mut sim_status: Option<Vec<Location>> = None;
+    let sim_status: Arc<Mutex<Vec<Location>>> = Arc::new(Mutex::new(vec![]));
     loop {
         tokio::select! {
             req = rx.recv() => {
@@ -274,12 +273,11 @@ async fn listener_signaling_task(mut rx: mpsc::Receiver<(ManagerRequest, oneshot
                                 let _ = req.1.send(output);
                             }
                             ManagerRequest::GetSimStatus => {
-                                println!("received req for simstatus");
-                                if let Some(status) = sim_status.as_ref() {
-                                    let _ = req.1.send(ManagerResponse::SimStatus((*status).clone()));
-                                } else {
-                                    let _ = req.1.send(ManagerResponse::None);
+                                let status;
+                                {
+                                    status = sim_status.lock().expect("Failed locking sim_status").clone();
                                 }
+                                let _ = req.1.send(ManagerResponse::SimStatus(status));
                             }
                             ManagerRequest::AddListener(id, address) => {
 
@@ -307,6 +305,7 @@ async fn listener_signaling_task(mut rx: mpsc::Receiver<(ManagerRequest, oneshot
                                         // in a separate thread
                                         let join_packet_ = join_packet_name.clone();
                                         let custom_listeners_ = Arc::clone(&custom_listeners);
+                                        let sim_status_ = Arc::clone(&sim_status);
                                         tokio::spawn(async move {
                                             // TODO: get the proxies in here
                                             let listener = Listener::new(wss_address, id, join_packet_, None);
@@ -323,7 +322,21 @@ async fn listener_signaling_task(mut rx: mpsc::Receiver<(ManagerRequest, oneshot
                                                         guard.insert(format!("{}@{}", id, address), Arc::new(listener));
                                                         let _ = req.1.send(ManagerResponse::NewListenerResult(ListenerAdditionResponse::Success));
 
-
+                                                        // TODO: Have the sim_status vec be shared between the two threads instead of clumsily adding the new listener here as well
+                                                        {
+                                                            let mut guard = sim_status_.lock().expect("Failed lock on simstatus");
+                                                            if !try_add(&listener_id, &info, guard.as_mut()) {
+                                                                let new_location = Location {
+                                                                    location: info.region.clone(),
+                                                                    address: String::from(address.split('@').collect::<Vec<&str>>()[1]),
+                                                                    current_players: 0,
+                                                                    systems: Vec::new(),
+                                                                    modding: None
+                                                                };
+                                                                guard.push(new_location);
+                                                                try_add(&listener_id, &info, &mut guard.as_mut());
+                                                            }
+                                                        }
                                                     }
                                                 } else {
                                                     tokio::spawn(async move {listener.stop().await;});
@@ -351,7 +364,8 @@ async fn listener_signaling_task(mut rx: mpsc::Receiver<(ManagerRequest, oneshot
                         return;
                     }
                     Some(status) => {
-                        sim_status = Some(status);
+                        let mut guard = sim_status.lock().expect("Failed lock on sim status");
+                        *guard.as_mut() = status;
                     }
                 }
             }

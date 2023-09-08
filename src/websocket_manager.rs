@@ -71,20 +71,14 @@ pub async fn manage_ws(ws: WebSocketStream<Upgraded>, listeners: Arc<ListenerMan
                         return Ok(());
                     }
                     Some(res) => {
-                        println!("Received msg");
                         if let Message::Text(data) = res? {
-                            println!("Received text msg: {}", data);
                             if let Ok(msg) = serde_json::from_str::<SocketMessage>(data.as_str()) {
-                                println!("{}", msg.name);
                                 if msg.name.as_str() == "get_name" {
-                                    println!("Received get_name");
                                     let id: u8 = msg.data.id.as_u64().unwrap_or(0) as u8;
                                     if let Some(player) = listener.get_name(id).await {
                                         ws_tx.send(Message::Text(player)).await?;
                                     }
                                 }
-                            } else {
-                                println!("Error deserializing");
                             }
                         }
                     }

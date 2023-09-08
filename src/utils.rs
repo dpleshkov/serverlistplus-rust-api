@@ -31,7 +31,8 @@ pub struct Location {
 
 // TODO: eliminate dependence on reqwest
 
-enum SimStatusError {
+#[derive(Debug)]
+pub enum SimStatusError {
     ReqwestError(reqwest::Error),
     SerdeError(serde_json::Error)
 }
