@@ -58,7 +58,6 @@ pub async fn manage_ws(ws: WebSocketStream<Upgraded>, listeners: Arc<ListenerMan
     }
     let game_state = maybe_game_state.unwrap();
 
-    // TODO: get rid of silly json serialization and then deserialization here
     ws_tx.send(Message::Text(json!({
         "name": "mode_info",
         "data": game_state

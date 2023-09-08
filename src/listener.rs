@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::fmt::Formatter;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use futures::{SinkExt, StreamExt};
 use futures_enum::{Sink, Stream};
@@ -14,7 +13,7 @@ use tokio_tungstenite::{client_async_tls, connect_async, MaybeTlsStream, WebSock
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::error::Error as WsError;
 use tokio_tungstenite::tungstenite::Message;
-use crate::http_utils::translate_color;
+use crate::utils::{get_ms_since_epoch, translate_color};
 
 use crate::proxy::{InnerProxy, ProxyStream};
 
@@ -28,7 +27,8 @@ enum ListenerResponse {
 enum ListenerRequest {
     Subscribe,
     GetName(u8),
-    GetState
+    GetState,
+    Shutdown
 }
 
 enum ListenerError {
@@ -89,7 +89,7 @@ struct GameDataPlayerCustom {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
-struct GameDataPlayer {
+pub struct GameDataPlayer {
     id: u8,
     hue: Option<u16>,
     friendly: Option<u8>,
@@ -104,11 +104,11 @@ struct GameDataPlayer {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
-struct GameDataModeSimplified {
+pub struct GameDataModeSimplified {
     map_size: u16,
     friendly_colors: u8,
-    unlisted: bool,
-    id: String,
+    pub(crate) unlisted: bool,
+    pub(crate) id: String,
     teams: Option<Vec<GameDataTeam>>,
     root_mode: Option<String>,
 }
@@ -126,15 +126,15 @@ struct ApiData {
 pub struct GameData {
     version: u8,
     seed: u16,
-    servertime: u32,
-    systemid: u16,
+    pub(crate) servertime: u32,
+    pub(crate) systemid: u16,
     size: u16,
-    mode: GameDataModeSimplified,
-    region: String,
-    obtained: Option<u64>,
-    players: Option<HashMap<u8, GameDataPlayer>>,
+    pub(crate) mode: GameDataModeSimplified,
+    pub(crate) region: String,
+    pub(crate) obtained: Option<u64>,
+    pub(crate) players: Option<HashMap<u8, GameDataPlayer>>,
     api: Option<ApiData>,
-    name: String
+    pub(crate) name: String
 }
 
 #[derive(Serialize, Deserialize)]
@@ -211,6 +211,10 @@ impl Listener {
         None
     }
 
+    pub async fn stop(&self) {
+        let _ = self.req(ListenerRequest::Shutdown).await;
+    }
+
     pub fn is_finished(&self) -> bool {
         self.handle.is_finished()
     }
@@ -256,11 +260,6 @@ async fn listener_main(address: String, proxy: Option<String>, game_id: u16, mut
 
     let mut welcome_msg: GameData;
 
-    let time_start = SystemTime::now();
-    let since_the_epoch = time_start
-        .duration_since(UNIX_EPOCH)
-        .expect("Time went backwards");
-
     match socket_rx.next().await {
         None => {
             return Ok(());
@@ -283,7 +282,7 @@ async fn listener_main(address: String, proxy: Option<String>, game_id: u16, mut
                             }
                             welcome_msg = serde_json::from_value(msg.data).expect("failed parsing msg");
                             welcome_msg.players = Some(HashMap::new());
-                            welcome_msg.obtained = Some(since_the_epoch.as_secs() * 1000 + since_the_epoch.subsec_nanos() as u64 / 1_000_000);
+                            welcome_msg.obtained = Some(get_ms_since_epoch());
 
                             let mode_id = welcome_msg.mode.id.as_str();
                             let root_mode = welcome_msg.mode.root_mode.clone();
@@ -502,6 +501,10 @@ async fn listener_main(address: String, proxy: Option<String>, game_id: u16, mut
                                 } else {
                                     let _ = req.1.send(ListenerResponse::None);
                                 }
+                            }
+                            ListenerRequest::Shutdown => {
+                                let _ = req.1.send(ListenerResponse::None);
+                                return Ok(());
                             }
                         }
                     }

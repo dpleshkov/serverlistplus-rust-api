@@ -3,8 +3,9 @@ use reqwest;
 use reqwest::{Client};
 use serde::{Deserialize, Serialize};
 use tokio::io;
+use std::fs::read_to_string;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-// TODO: remove unnecessary Clone trait
 #[derive(Deserialize, Serialize, Clone)]
 pub struct System {
     pub(crate) name: String,
@@ -27,6 +28,8 @@ pub struct Location {
     pub(crate) systems: Vec<System>,
     pub(crate) modding: Option<bool>
 }
+
+// TODO: eliminate dependence on reqwest
 
 pub async fn get_sim_status(optional_client: Option<&Client>) -> Vec<Location> {
     let res;
@@ -59,12 +62,23 @@ pub async fn get_join_packet_name(optional_client: Option<&Client>) -> io::Resul
     return Ok(packet_name.parse().unwrap());
 }
 
-pub fn to_wss_address(ip: &String) -> String {
-    let s: Vec<&str> = ip.split(':').collect();
-    let addr: Vec<&str> = s[0].split('.').collect();
-    let port = s[1];
+pub fn get_ms_since_epoch() -> u64 {
+    let t = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("Time went backwards");
+    t.as_secs() * 1000 + t.subsec_nanos() as u64 / 1_000_000
+}
 
-    return format!("wss://{}-{}-{}-{}.starblast.io:{}/", addr[0], addr[1], addr[2], addr[3], port);
+pub fn to_wss_address(ip: &String) -> Option<String> {
+    let s: Vec<&str> = ip.split(':').collect();
+    if s.len() == 2 {
+        let addr: Vec<&str> = s[0].split('.').collect();
+        let port = s[1];
+        if addr.len() == 4 {
+            return Some(format!("wss://{}-{}-{}-{}.starblast.io:{}/", addr[0], addr[1], addr[2], addr[3], port));
+        }
+    }
+    None
 }
 
 pub fn translate_color(hue: u16) -> String {
@@ -86,4 +100,16 @@ pub fn translate_color(hue: u16) -> String {
         return "Pink".parse().unwrap();
     }
     return "Red".parse().unwrap();
+}
+
+pub fn read_proxies_file(file_path: String) -> Vec<String> {
+    let mut output: Vec<String> = vec![];
+    for line in read_to_string(file_path).expect("Failed reading proxy file").lines() {
+        if line.starts_with('#') {
+            continue;
+        } else {
+            output.push(String::from(line));
+        }
+    }
+    output
 }
