@@ -9,8 +9,8 @@ edition = "2021"
 tokio = { version = "1", features = ["full"] }
 hyper-tungstenite = "0.11.1"
 hyper = { version = "0.14", features = ["full"] }
-tokio-tungstenite = {version = "0.20", features = ["default", "native-tls"]}
-reqwest = { version = "0.11", features = ["json", "rustls-tls"], default-features = false }
+tokio-tungstenite = {version = "0.20", features = ["default", "native-tls-vendored"]}
+reqwest = { version = "0.11", features = ["json", "native-tls-vendored"], default-features = false }
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 
