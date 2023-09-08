@@ -361,6 +361,7 @@ async fn listener_main(address: String, proxy: Option<String>, game_id: u16, mut
                                     }
                                     _ => {}
                                 }
+                                let _ = socket_tx.send(Message::Binary(vec![0])).await;
                             }
                             Message::Binary(buf) => {
                                 match buf[0] {
@@ -477,6 +478,7 @@ async fn listener_main(address: String, proxy: Option<String>, game_id: u16, mut
                                     }
                                     _ => {}
                                 }
+                                let _ = socket_tx.send(Message::Binary(vec![0])).await;
                             }
                             _ => {}
                         }
