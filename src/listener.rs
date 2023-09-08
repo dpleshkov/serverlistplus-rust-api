@@ -339,15 +339,17 @@ async fn listener_main(address: String, proxy: Option<String>, game_id: u16, mut
                                 let msg: GenericJSONMessage = serde_json::from_str(msg.as_str()).expect("failed parsing msg");
                                 match msg.name.as_str() {
                                     "player_name" => {
-                                        let player_name: GameDataPlayer = serde_json::from_value(msg.data).expect("failed parsing msg");
-                                        if let Some(player) = welcome_msg.players.as_mut().unwrap().get_mut(&player_name.id) {
-                                            player.player_name = player_name.player_name;
-                                            player.custom = player_name.custom;
-                                            player.hue = player_name.hue;
-                                            player.friendly = player_name.friendly;
-                                        } else {
-                                            welcome_msg.players.as_mut().unwrap().insert(player_name.id, player_name);
+                                        if let Ok(player_name) = serde_json::from_value::<GameDataPlayer>(msg.data) {
+                                            if let Some(player) = welcome_msg.players.as_mut().unwrap().get_mut(&player_name.id) {
+                                                player.player_name = player_name.player_name;
+                                                player.custom = player_name.custom;
+                                                player.hue = player_name.hue;
+                                                player.friendly = player_name.friendly;
+                                            } else {
+                                                welcome_msg.players.as_mut().unwrap().insert(player_name.id, player_name);
+                                            }
                                         }
+
                                     }
                                     "shipgone" => {
                                         let id: u8 = msg.data.as_u64().unwrap() as u8;

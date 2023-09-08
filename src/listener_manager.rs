@@ -136,7 +136,7 @@ async fn listener_manager_task(rx: mpsc::Receiver<(ManagerRequest, oneshot::Send
             for location in sim_status.iter() {
                 for system in location.systems.iter() {
                     let id = format!("{}@{}", system.id, location.address);
-                    if system.open && !system.survival && !listeners_.contains_key(&id) && system.mode == "team" {
+                    if !system.survival && !listeners_.contains_key(&id) && system.mode != "invasion" {
                         println!("Putting new listener into {}", id);
                         if let Some(proxies) = optional_proxies.as_ref() {
                             listeners_.insert(id, Arc::new(Listener::new(to_wss_address(&location.address).expect("invalid address in simstatus???"), system.id, join_packet_name.clone(), Some(proxies[proxy_counter].clone()))));
@@ -246,21 +246,16 @@ async fn listener_signaling_task(mut rx: mpsc::Receiver<(ManagerRequest, oneshot
                                 // Might be a more elegant way to do this with more restructuring done
                                 let mut maybe_listener = None;
                                 let mut output = ManagerResponse::None;
-                                println!("Got req for state {}", id);
                                 {
                                     let guard = listeners.lock().expect("Failed locking listeners");
-                                    println!("Locked listener guard");
                                     if let Some(listener) = guard.get(&id) {
-                                        println!("Listener {} exists", id);
                                         // ignore result of sending it back
                                         maybe_listener = Some(Arc::clone(listener));
                                     }
                                 }
                                 if maybe_listener.is_none() {
                                     let guard = custom_listeners.lock().expect("Failed locking listeners");
-                                    println!("Locked listener guard");
                                     if let Some(listener) = guard.get(&id) {
-                                        println!("Listener {} exists", id);
                                         // ignore result of sending it back
                                         maybe_listener = Some(Arc::clone(listener));
                                     }
@@ -321,6 +316,8 @@ async fn listener_signaling_task(mut rx: mpsc::Receiver<(ManagerRequest, oneshot
                                                         // Finally, success
                                                         guard.insert(format!("{}@{}", id, address), Arc::new(listener));
                                                         let _ = req.1.send(ManagerResponse::NewListenerResult(ListenerAdditionResponse::Success));
+
+
                                                     }
                                                 } else {
                                                     tokio::spawn(async move {listener.stop().await;});
