@@ -371,8 +371,12 @@ async fn listener_main(address: String, proxy: Option<String>, game_id: u16, mut
                                         let mut packet = vec![1u8; encoded_byte_length];
                                         let map_size = welcome_msg.mode.map_size;
 
+                                        let mut existing_ids: Vec<u8> = vec![0u8; 32];
+                                        let players = welcome_msg.players.as_mut().unwrap();
+
                                         for i in (2..len).step_by(8) {
                                             let id = buf[i];
+                                            existing_ids[(id >> 3) as usize] = existing_ids[(id >> 3) as usize] | (1 << (id & 0b111));
                                             // is likely a more elegant way to do this im missing
                                             let rx = if buf[i+1] > 127 {-(!buf[i+1] as i8)} else {buf[i+1] as i8};
                                             let ry = if buf[i+2] > 127 {-(!buf[i+2] as i8)} else {buf[i+2] as i8};
@@ -384,7 +388,6 @@ async fn listener_main(address: String, proxy: Option<String>, game_id: u16, mut
                                             let alive: bool = buf[i+3] & 1 != 0;
                                             encoded_byte_length += 15;
 
-                                            let players = welcome_msg.players.as_mut().unwrap();
                                             if players.contains_key(&id) {
                                                 let player = players.get_mut(&id).unwrap();
                                                 player.id = id;
@@ -435,6 +438,11 @@ async fn listener_main(address: String, proxy: Option<String>, game_id: u16, mut
                                             }
                                             packet[d+13] = (p).to_le_bytes()[0];
                                             packet[d+14] = (p).to_le_bytes()[1];
+                                        }
+                                        for i in 0u8..=255 {
+                                            if existing_ids[(i >> 3) as usize] & (1 << (i & 0b111)) == 0 && players.contains_key(&i) {
+                                                players.remove(&i);
+                                            }
                                         }
                                         if blob_tx.receiver_count() > 0 {
                                             blob_tx.send(packet).expect("failed to send ship info byte vec");
