@@ -1,10 +1,12 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration};
-use reqwest;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::sleep;
+
+use hyper::{Client};
+use hyper_tls::HttpsConnector;
 
 use crate::utils::{get_join_packet_name, get_sim_status, to_wss_address, Location, System, get_ms_since_epoch};
 use crate::listener::{GameData, Listener};
@@ -131,14 +133,14 @@ async fn listener_manager_task(rx: mpsc::Receiver<(ManagerRequest, oneshot::Send
     let listeners: Arc<Mutex<HashMap<String, Arc<Listener>>>> = Arc::new(Mutex::new(HashMap::new()));
     let custom_listeners: Arc<Mutex<HashMap<String, Arc<Listener>>>> = Arc::new(Mutex::new(HashMap::new()));
     let mut custom_locations: Vec<Location> = vec![];
-    let client = reqwest::Client::new();
+    let client = Client::builder().build::<_, hyper::Body>(HttpsConnector::new());
 
     let (sim_status_tx, sim_status_rx) = mpsc::channel::<Vec<Location>>(1);
 
 
     println!("Fetching join packet...");
 
-    let join_packet_name = get_join_packet_name(Some(&client)).await.expect("Failed retrieving join packet");
+    let join_packet_name = get_join_packet_name(Some(client.clone())).await.expect("Failed retrieving join packet");
 
     tokio::spawn(listener_signaling_task(rx, Arc::clone(&listeners), Arc::clone(&custom_listeners), sim_status_rx, join_packet_name.clone()));
 
@@ -147,10 +149,10 @@ async fn listener_manager_task(rx: mpsc::Receiver<(ManagerRequest, oneshot::Send
     loop {
         println!("Checking listeners...");
 
-        let mut sim_status_res = get_sim_status(Some(&client)).await;
+        let mut sim_status_res = get_sim_status(Some(client.clone())).await;
         while sim_status_res.is_err() {
             println!("Error fetching simstatus.json. Retrying...");
-            sim_status_res = get_sim_status(Some(&client)).await;
+            sim_status_res = get_sim_status(Some(client.clone())).await;
         }
 
         let mut sim_status = sim_status_res.unwrap();

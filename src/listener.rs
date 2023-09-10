@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Formatter;
 
 use futures::{SinkExt, StreamExt};
@@ -335,8 +335,15 @@ async fn listener_main(address: String, proxy: Option<String>, game_id: u16, mut
                                 println!("Connection closed to {}", game_id);
                                 return Ok(())
                             }
-                            Message::Text(msg) => {
-                                let msg: GenericJSONMessage = serde_json::from_str(msg.as_str()).expect("failed parsing msg");
+                            Message::Text(text) => {
+                                let msg: GenericJSONMessage;
+                                if let Ok(data) = serde_json::from_str::<GenericJSONMessage>(text.as_str()) {
+                                    msg = data;
+                                } else {
+                                    dbg!(text.clone());
+                                    msg = serde_json::from_str(text.as_str().replace("\\u", "\\\\u").as_str()).expect("Failed parsing msg");
+                                }
+                                //let msg: GenericJSONMessage = serde_json::from_str(msg.as_str()).expect("failed parsing msg");
                                 match msg.name.as_str() {
                                     "player_name" => {
                                         if let Ok(player_name) = serde_json::from_value::<GameDataPlayer>(msg.data) {
@@ -371,12 +378,12 @@ async fn listener_main(address: String, proxy: Option<String>, game_id: u16, mut
                                         let mut packet = vec![1u8; encoded_byte_length];
                                         let map_size = welcome_msg.mode.map_size;
 
-                                        let mut existing_ids: Vec<u8> = vec![0u8; 32];
+                                        let mut existing_ids = HashSet::<u8>::new();
                                         let players = welcome_msg.players.as_mut().unwrap();
 
                                         for i in (2..len).step_by(8) {
                                             let id = buf[i];
-                                            existing_ids[(id >> 3) as usize] = existing_ids[(id >> 3) as usize] | (1 << (id & 0b111));
+                                            existing_ids.insert(id);
                                             // is likely a more elegant way to do this im missing
                                             let rx = if buf[i+1] > 127 {-(!buf[i+1] as i8)} else {buf[i+1] as i8};
                                             let ry = if buf[i+2] > 127 {-(!buf[i+2] as i8)} else {buf[i+2] as i8};
@@ -439,8 +446,9 @@ async fn listener_main(address: String, proxy: Option<String>, game_id: u16, mut
                                             packet[d+13] = (p).to_le_bytes()[0];
                                             packet[d+14] = (p).to_le_bytes()[1];
                                         }
+                                        // TODO: make this not use a whole hashset
                                         for i in 0u8..=255 {
-                                            if existing_ids[(i >> 3) as usize] & (1 << (i & 0b111)) == 0 && players.contains_key(&i) {
+                                            if players.contains_key(&i) && !existing_ids.contains(&i) {
                                                 players.remove(&i);
                                             }
                                         }

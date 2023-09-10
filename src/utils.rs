@@ -1,10 +1,10 @@
 use serde_json;
-use reqwest;
-use reqwest::{Client};
 use serde::{Deserialize, Serialize};
-use tokio::io;
 use std::fs::read_to_string;
 use std::time::{SystemTime, UNIX_EPOCH};
+use hyper::{Client};
+use hyper::client::HttpConnector;
+use hyper_tls::HttpsConnector;
 
 #[derive(Deserialize, Serialize, Clone)]
 pub struct System {
@@ -29,17 +29,15 @@ pub struct Location {
     pub(crate) modding: Option<bool>
 }
 
-// TODO: eliminate dependence on reqwest
-
 #[derive(Debug)]
 pub enum SimStatusError {
-    ReqwestError(reqwest::Error),
+    HyperError(hyper::Error),
     SerdeError(serde_json::Error)
 }
 
-impl From<reqwest::Error> for SimStatusError {
-    fn from(err: reqwest::Error) -> Self {
-        SimStatusError::ReqwestError(err)
+impl From<hyper::Error> for SimStatusError {
+    fn from(err: hyper::Error) -> Self {
+        SimStatusError::HyperError(err)
     }
 }
 
@@ -49,33 +47,37 @@ impl From<serde_json::Error> for SimStatusError {
     }
 }
 
-pub async fn get_sim_status(optional_client: Option<&Client>) -> Result<Vec<Location>, SimStatusError> {
+pub async fn get_sim_status(optional_client: Option<Client<HttpsConnector<HttpConnector>>>) -> Result<Vec<Location>, SimStatusError> {
     let res;
     if let Some(client) = optional_client {
-        res = client.get("https://starblast.io/simstatus.json").send().await;
+        res = client.get("https://starblast.io/simstatus.json".parse().unwrap()).await;
     } else {
-        res = reqwest::get("https://starblast.io/simstatus.json").await;
+        let client = Client::builder().build::<_, hyper::Body>(HttpsConnector::new());
+        res = client.get("https://starblast.io/simstatus.json".parse().unwrap()).await;
     }
-    let body = res?.text()
-        .await?;
-    let sim_status: Vec<Location> = serde_json::from_str(&body)?;
+    let body = res?.into_body();
+    let bytes = hyper::body::to_bytes(body).await?;
+    let text = String::from_utf8(bytes.to_vec()).expect("Failed parsing body");
+    let sim_status: Vec<Location> = serde_json::from_str(&text)?;
     return Ok(sim_status);
 }
 
-pub async fn get_join_packet_name(optional_client: Option<&Client>) -> io::Result<String> {
+pub async fn get_join_packet_name(optional_client: Option<Client<HttpsConnector<HttpConnector>>>) -> Result<String, SimStatusError> {
     let res;
     if let Some(client) = optional_client {
-        res = client.get("https://starblast.io/").send().await;
+        res = client.get("https://starblast.io/".parse().unwrap()).await;
     } else {
-        res = reqwest::get("https://starblast.io").await;
+        let client = Client::builder().build::<_, hyper::Body>(HttpsConnector::new());
+        res = client.get("https://starblast.io/".parse().unwrap()).await;
     }
-    let body = res.expect("Failure fetching site HTML").text()
-        .await.expect("Failure parsing site HTML response");
-    let obf_name_start = body.find("t.socket.send(JSON.stringify({name:")
+    let body = res?.into_body();
+    let bytes = hyper::body::to_bytes(body).await?;
+    let text = String::from_utf8(bytes.to_vec()).expect("Failed parsing body");
+    let obf_name_start = text.find("t.socket.send(JSON.stringify({name:")
         .expect("Could not find join packet obfuscated name");
-    let obf_name = &body[obf_name_start+41..obf_name_start+46];
-    let packet_name_start = body.find(obf_name).expect("Could not find join packet name");
-    let packet_name_untrimmed = &body[packet_name_start+7..packet_name_start+15];
+    let obf_name = &text[obf_name_start+41..obf_name_start+46];
+    let packet_name_start = text.find(obf_name).expect("Could not find join packet name");
+    let packet_name_untrimmed = &text[packet_name_start+7..packet_name_start+15];
     let packet_name = packet_name_untrimmed.split("\"").next().unwrap();
     return Ok(packet_name.parse().unwrap());
 }
