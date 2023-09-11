@@ -1,16 +1,15 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration};
+use std::time::Duration;
+
+use hyper::Client;
+use hyper_tls::HttpsConnector;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::sleep;
 
-use hyper::{Client};
-use hyper_tls::HttpsConnector;
-
-use crate::utils::{get_join_packet_name, get_sim_status, to_wss_address, Location, System, get_ms_since_epoch};
 use crate::listener::{GameData, Listener};
-
+use crate::utils::{get_join_packet_name, get_ms_since_epoch, get_sim_status, Location, System, to_wss_address};
 
 pub enum ManagerResponse {
     Listener(Arc<Listener>),

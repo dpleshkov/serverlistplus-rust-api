@@ -1,10 +1,11 @@
-use serde_json;
-use serde::{Deserialize, Serialize};
 use std::fs::read_to_string;
 use std::time::{SystemTime, UNIX_EPOCH};
-use hyper::{Client};
+
+use hyper::Client;
 use hyper::client::HttpConnector;
 use hyper_tls::HttpsConnector;
+use serde::{Deserialize, Serialize};
+use serde_json;
 
 #[derive(Deserialize, Serialize, Clone)]
 pub struct System {

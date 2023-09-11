@@ -13,9 +13,9 @@ use tokio_tungstenite::{client_async_tls, connect_async, MaybeTlsStream, WebSock
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::error::Error as WsError;
 use tokio_tungstenite::tungstenite::Message;
-use crate::utils::{get_ms_since_epoch, translate_color};
 
 use crate::proxy::{InnerProxy, ProxyStream};
+use crate::utils::{get_ms_since_epoch, translate_color};
 
 enum ListenerResponse {
     Receiver(broadcast::Receiver<Vec<u8>>),
@@ -259,6 +259,8 @@ async fn listener_main(address: String, proxy: Option<String>, game_id: u16, mut
     }).to_string())).await?;
 
     let mut welcome_msg: GameData;
+    let use_generic_logic: bool;
+    let mut last_refreshed_player_list = get_ms_since_epoch();
 
     match socket_rx.next().await {
         None => {
@@ -288,6 +290,7 @@ async fn listener_main(address: String, proxy: Option<String>, game_id: u16, mut
                             let root_mode = welcome_msg.mode.root_mode.clone();
                             if !(mode_id == "team" || (mode_id == "modding" && root_mode == Some("team".parse().unwrap()))) {
                                 println!("Connection successful to {}. Using generic logic", game_id);
+                                use_generic_logic = true;
                                 for i in 1u8..=255 {
                                     socket_tx.send(Message::Text(json!({
                                         "name": "get_name",
@@ -298,6 +301,7 @@ async fn listener_main(address: String, proxy: Option<String>, game_id: u16, mut
                                 }
                             } else {
                                 println!("Connection successful to {}. Using team logic", game_id);
+                                use_generic_logic = false;
                                 for team in welcome_msg.mode.teams.as_mut().unwrap() {
                                     team.color = Some(translate_color(team.hue));
                                 }
@@ -367,6 +371,21 @@ async fn listener_main(address: String, proxy: Option<String>, game_id: u16, mut
                                         return Err(ListenerError::CannotJoin(game_id));
                                     }
                                     _ => {}
+                                }
+                                // dump our player list every minute if the game isn't team mode, forcing a refresh
+                                // this is due to the game not sending us shipgone messages if we haven't entered
+                                if use_generic_logic && get_ms_since_epoch() - last_refreshed_player_list > 60000 {
+                                    println!("Refreshing player list for {}", game_id);
+                                    last_refreshed_player_list = get_ms_since_epoch();
+                                    welcome_msg.players.as_mut().unwrap().drain();
+                                    for i in 1u8..=255 {
+                                        socket_tx.send(Message::Text(json!({
+                                            "name": "get_name",
+                                            "data": {
+                                                "id": i
+                                            }
+                                        }).to_string())).await?;
+                                    }
                                 }
                                 let _ = socket_tx.send(Message::Binary(vec![0])).await;
                             }

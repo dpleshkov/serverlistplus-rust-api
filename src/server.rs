@@ -3,10 +3,10 @@ use std::sync::Arc;
 
 use hyper::{Body, Method, Request, Response, Server, StatusCode};
 use hyper_tungstenite::hyper::service::{make_service_fn, service_fn};
+use serde::Deserialize;
 use serde_json;
-use serde::{Deserialize};
 
-use crate::listener_manager::{ListenerManager, ListenerAdditionResponse};
+use crate::listener_manager::{ListenerAdditionResponse, ListenerManager};
 use crate::websocket_manager::manage_ws;
 
 #[derive(Deserialize)]

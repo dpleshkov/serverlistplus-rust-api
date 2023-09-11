@@ -4,8 +4,8 @@ use std::io::Error;
 use std::io::ErrorKind;
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use base64::Engine;
 
+use base64::Engine;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpStream;
 use tokio_socks::tcp::Socks5Stream;
