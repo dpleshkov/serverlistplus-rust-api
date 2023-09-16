@@ -111,6 +111,7 @@ pub struct GameDataModeSimplified {
     pub(crate) id: String,
     teams: Option<Vec<GameDataTeam>>,
     root_mode: Option<String>,
+    ships: Option<Value>
 }
 
 #[derive(Serialize, Deserialize, Clone)]
