@@ -21,14 +21,17 @@ enum ListenerResponse {
     Receiver(broadcast::Receiver<Vec<u8>>),
     Json(String),
     GameState(GameData),
-    None
+    None,
+    Bytes(Vec<u8>)
 }
 
 enum ListenerRequest {
     Subscribe,
     GetName(u8),
     GetState,
-    Shutdown
+    Shutdown,
+    GetRadarPacket,
+    GetTeamPacket
 }
 
 enum ListenerError {
@@ -212,6 +215,24 @@ impl Listener {
         None
     }
 
+    pub async fn get_radar_packet(&self) -> Option<Vec<u8>> {
+        if let Some(res) = self.req(ListenerRequest::GetRadarPacket).await {
+            if let ListenerResponse::Bytes(data) = res {
+                return Some(data);
+            }
+        }
+        None
+    }
+
+    pub async fn get_team_packet(&self) -> Option<Vec<u8>> {
+        if let Some(res) = self.req(ListenerRequest::GetTeamPacket).await {
+            if let ListenerResponse::Bytes(data) = res {
+                return Some(data);
+            }
+        }
+        None
+    }
+
     pub async fn stop(&self) {
         let _ = self.req(ListenerRequest::Shutdown).await;
     }
@@ -262,6 +283,8 @@ async fn listener_main(address: String, proxy: Option<String>, game_id: u16, mut
     let mut welcome_msg: GameData;
     let use_generic_logic: bool;
     let mut last_refreshed_player_list = get_ms_since_epoch();
+    let mut cached_radar_packet: Vec<u8> = vec![1u8; 1];
+    let mut cached_team_packet: Vec<u8> = vec![2u8; 1];
 
     match socket_rx.next().await {
         None => {
@@ -472,8 +495,9 @@ async fn listener_main(address: String, proxy: Option<String>, game_id: u16, mut
                                                 players.remove(&i);
                                             }
                                         }
+                                        cached_radar_packet = packet;
                                         if blob_tx.receiver_count() > 0 {
-                                            blob_tx.send(packet).expect("failed to send ship info byte vec");
+                                            blob_tx.send(cached_radar_packet.clone()).expect("failed to send ship info byte vec");
                                         }
                                     }
                                     0xcd => {
@@ -507,8 +531,9 @@ async fn listener_main(address: String, proxy: Option<String>, game_id: u16, mut
                                             packet[i*5+4] = buf[o+4];
                                             packet[i*5+5] = buf[o+5];
                                         }
+                                        cached_team_packet = packet;
                                         if blob_tx.receiver_count() > 0 {
-                                            blob_tx.send(packet).expect("failed to send team info byte vec");
+                                            blob_tx.send(cached_team_packet.clone()).expect("failed to send team info byte vec");
                                         }
                                         compute_redundant_info(&mut welcome_msg);
                                     }
@@ -530,6 +555,12 @@ async fn listener_main(address: String, proxy: Option<String>, game_id: u16, mut
                             }
                             ListenerRequest::Subscribe => {
                                 let _ = req.1.send(ListenerResponse::Receiver(blob_tx.subscribe()));
+                            }
+                            ListenerRequest::GetRadarPacket => {
+                                let _ = req.1.send(ListenerResponse::Bytes(cached_radar_packet.clone()));
+                            }
+                            ListenerRequest::GetTeamPacket => {
+                                let _ = req.1.send(ListenerResponse::Bytes(cached_team_packet.clone()));
                             }
                             ListenerRequest::GetName(id) => {
                                 let maybe_player = welcome_msg.players.as_ref().unwrap().get(&id);

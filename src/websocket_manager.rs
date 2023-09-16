@@ -63,6 +63,19 @@ pub async fn manage_ws(ws: WebSocketStream<Upgraded>, listeners: Arc<ListenerMan
         "data": game_state
     }).to_string())).await?;
 
+    let maybe_radar = listener.get_radar_packet().await;
+    let maybe_team = listener.get_team_packet().await;
+
+    if maybe_radar.is_none() || maybe_team.is_none() {
+        return Ok(());
+    }
+
+    let radar = maybe_radar.unwrap();
+    let team = maybe_team.unwrap();
+
+    ws_tx.send(Message::Binary(radar)).await?;
+    ws_tx.send(Message::Binary(team)).await?;
+
     loop {
         tokio::select! {
             next = ws_rx.next() => {
