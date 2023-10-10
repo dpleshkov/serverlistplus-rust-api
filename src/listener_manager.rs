@@ -311,7 +311,7 @@ async fn listener_signaling_task(mut rx: mpsc::Receiver<(ManagerRequest, oneshot
                                             // TODO: get the proxies in here
                                             let listener = Listener::new(wss_address, id, join_packet_, None);
                                             if let Some(info) = listener.get_game_state().await {
-                                                if info.mode.unlisted {
+                                                if info.mode.unlisted && info.mode.id != String::from("invasion") {
 
                                                     let mut guard = custom_listeners_.lock().expect("Failed locking listeners");
                                                     // We need to re-check because some time has passed and another listener may have been made
