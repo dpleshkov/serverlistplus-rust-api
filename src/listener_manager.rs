@@ -9,7 +9,9 @@ use tokio::task::JoinHandle;
 use tokio::time::sleep;
 
 use crate::listener::{GameData, Listener};
-use crate::utils::{get_join_packet_name, get_ms_since_epoch, get_sim_status, Location, System, to_wss_address};
+use crate::utils::{
+    get_join_packet_name, get_ms_since_epoch, get_sim_status, to_wss_address, Location, System,
+};
 
 pub enum ManagerResponse {
     Listener(Arc<Listener>),
@@ -43,14 +45,13 @@ impl ListenerManager {
     pub fn new(optional_proxies: Option<Vec<String>>) -> Self {
         let (tx, rx) = mpsc::channel::<(ManagerRequest, oneshot::Sender<ManagerResponse>)>(8);
         let handle = tokio::spawn(listener_manager_task(rx, optional_proxies));
-        return ListenerManager {
-            handle,
-            tx,
-        };
+        ListenerManager { handle, tx }
     }
 
     pub async fn get_listener(&self, id: String) -> Option<Arc<Listener>> {
-        if let Some(ManagerResponse::Listener(listener)) = self.request(ManagerRequest::GetListener(id)).await {
+        if let Some(ManagerResponse::Listener(listener)) =
+            self.request(ManagerRequest::GetListener(id)).await
+        {
             Some(listener)
         } else {
             None
@@ -58,7 +59,9 @@ impl ListenerManager {
     }
 
     pub async fn get_sim_status(&self) -> Option<Vec<Location>> {
-        if let Some(ManagerResponse::SimStatus(sim_status)) = self.request(ManagerRequest::GetSimStatus).await {
+        if let Some(ManagerResponse::SimStatus(sim_status)) =
+            self.request(ManagerRequest::GetSimStatus).await
+        {
             Some(sim_status)
         } else {
             None
@@ -66,15 +69,23 @@ impl ListenerManager {
     }
 
     pub async fn get_state(&self, id: String) -> Option<GameData> {
-        if let Some(ManagerResponse::GameState(state)) = self.request(ManagerRequest::GetState(id)).await {
+        if let Some(ManagerResponse::GameState(state)) =
+            self.request(ManagerRequest::GetState(id)).await
+        {
             Some(state)
         } else {
             None
         }
     }
 
-    pub async fn add_custom_game(&self, id: u16, address: String) -> Option<ListenerAdditionResponse> {
-        if let Some(ManagerResponse::NewListenerResult(result)) = self.request(ManagerRequest::AddListener(id, address)).await {
+    pub async fn add_custom_game(
+        &self,
+        id: u16,
+        address: String,
+    ) -> Option<ListenerAdditionResponse> {
+        if let Some(ManagerResponse::NewListenerResult(result)) =
+            self.request(ManagerRequest::AddListener(id, address)).await
+        {
             Some(result)
         } else {
             None
@@ -88,22 +99,18 @@ impl ListenerManager {
 
         let (tx, rx) = oneshot::channel::<ManagerResponse>();
 
-        if let Err(_) = self.tx.send((req, tx)).await {
+        if self.tx.send((req, tx)).await.is_err() {
             return None;
         }
 
         match rx.await {
-            Ok(res) => {
-                Some(res)
-            }
-            Err(_) => {
-                None
-            }
+            Ok(res) => Some(res),
+            Err(_) => None,
         }
     }
 }
 
-fn try_add(id: &String, state: &GameData, locations: &mut Vec<Location>) -> bool {
+fn try_add(id: &str, state: &GameData, locations: &mut [Location]) -> bool {
     let addr = String::from(id.split('@').collect::<Vec<&str>>()[1]);
     for location in locations.iter_mut() {
         if location.address == *addr {
@@ -114,34 +121,54 @@ fn try_add(id: &String, state: &GameData, locations: &mut Vec<Location>) -> bool
                 name: state.name.clone(),
                 id: state.systemid,
                 mode: state.mode.id.clone(),
-                players: if let Some(p) = state.players.as_ref() { p.len() as u8 } else { 0 },
+                players: if let Some(p) = state.players.as_ref() {
+                    p.len() as u8
+                } else {
+                    0
+                },
                 unlisted: state.mode.unlisted,
                 open: true,
                 survival: false,
-                time: if let Some(t) = state.obtained { (state.servertime + (now - t) as u32) / 1000 } else { 0 },
+                time: if let Some(t) = state.obtained {
+                    (state.servertime + (now - t) as u32) / 1000
+                } else {
+                    0
+                },
                 criminal_activity: 0,
                 mod_id: None,
             });
             return true;
         }
     }
-    return false;
+    false
 }
 
-async fn listener_manager_task(rx: mpsc::Receiver<(ManagerRequest, oneshot::Sender<ManagerResponse>)>, optional_proxies: Option<Vec<String>>) {
-    let listeners: Arc<Mutex<HashMap<String, Arc<Listener>>>> = Arc::new(Mutex::new(HashMap::new()));
-    let custom_listeners: Arc<Mutex<HashMap<String, Arc<Listener>>>> = Arc::new(Mutex::new(HashMap::new()));
+async fn listener_manager_task(
+    rx: mpsc::Receiver<(ManagerRequest, oneshot::Sender<ManagerResponse>)>,
+    optional_proxies: Option<Vec<String>>,
+) {
+    let listeners: Arc<Mutex<HashMap<String, Arc<Listener>>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+    let custom_listeners: Arc<Mutex<HashMap<String, Arc<Listener>>>> =
+        Arc::new(Mutex::new(HashMap::new()));
     let mut custom_locations: Vec<Location> = vec![];
     let client = Client::builder().build::<_, hyper::Body>(HttpsConnector::new());
 
     let (sim_status_tx, sim_status_rx) = mpsc::channel::<Vec<Location>>(1);
 
-
     println!("Fetching join packet...");
 
-    let join_packet_name = get_join_packet_name(Some(client.clone())).await.expect("Failed retrieving join packet");
+    let join_packet_name = get_join_packet_name(Some(client.clone()))
+        .await
+        .expect("Failed retrieving join packet");
 
-    tokio::spawn(listener_signaling_task(rx, Arc::clone(&listeners), Arc::clone(&custom_listeners), sim_status_rx, join_packet_name.clone()));
+    tokio::spawn(listener_signaling_task(
+        rx,
+        Arc::clone(&listeners),
+        Arc::clone(&custom_listeners),
+        sim_status_rx,
+        join_packet_name.clone(),
+    ));
 
     let mut proxy_counter = 0;
 
@@ -159,7 +186,11 @@ async fn listener_manager_task(rx: mpsc::Receiver<(ManagerRequest, oneshot::Send
         // Remove all listeners that have expired
         {
             let mut listeners_ = listeners.lock().expect("couldn't lock listeners");
-            let keys: Vec<String> = listeners_.keys().cloned().filter(|l| listeners_.get(l).unwrap().is_finished()).collect();
+            let keys: Vec<String> = listeners_
+                .keys()
+                .filter(|&l| listeners_.get(l).unwrap().is_finished())
+                .cloned()
+                .collect();
             for key in keys {
                 println!("Removing stale listener for {}", key);
                 listeners_.remove(&key);
@@ -168,14 +199,35 @@ async fn listener_manager_task(rx: mpsc::Receiver<(ManagerRequest, oneshot::Send
             for location in sim_status.iter() {
                 for system in location.systems.iter() {
                     let id = format!("{}@{}", system.id, location.address);
-                    if !system.survival && !listeners_.contains_key(&id) && system.mode != "invasion" {
+                    if !system.survival
+                        && !listeners_.contains_key(&id)
+                        && system.mode != "invasion"
+                    {
                         println!("Putting new listener into {}", id);
                         if let Some(proxies) = optional_proxies.as_ref() {
-                            listeners_.insert(id, Arc::new(Listener::new(to_wss_address(&location.address).expect("invalid address in simstatus???"), system.id, join_packet_name.clone(), Some(proxies[proxy_counter].clone()))));
+                            listeners_.insert(
+                                id,
+                                Arc::new(Listener::new(
+                                    to_wss_address(&location.address)
+                                        .expect("invalid address in simstatus???"),
+                                    system.id,
+                                    join_packet_name.clone(),
+                                    Some(proxies[proxy_counter].clone()),
+                                )),
+                            );
                             proxy_counter += 1;
-                            proxy_counter = proxy_counter % proxies.len();
+                            proxy_counter %= proxies.len();
                         } else {
-                            listeners_.insert(id, Arc::new(Listener::new(to_wss_address(&location.address).expect("invalid address in simstatus???"), system.id, join_packet_name.clone(), None)));
+                            listeners_.insert(
+                                id,
+                                Arc::new(Listener::new(
+                                    to_wss_address(&location.address)
+                                        .expect("invalid address in simstatus???"),
+                                    system.id,
+                                    join_packet_name.clone(),
+                                    None,
+                                )),
+                            );
                         }
                     }
                 }
@@ -185,13 +237,20 @@ async fn listener_manager_task(rx: mpsc::Receiver<(ManagerRequest, oneshot::Send
         let cl: Vec<(String, Arc<Listener>)>;
         {
             let mut custom_listeners_ = custom_listeners.lock().expect("Couldn't lock listeners");
-            let keys: Vec<String> = custom_listeners_.keys().cloned().filter(|l| custom_listeners_.get(l).unwrap().is_finished()).collect();
+            let keys: Vec<String> = custom_listeners_
+                .keys()
+                .filter(|&l| custom_listeners_.get(l).unwrap().is_finished())
+                .cloned()
+                .collect();
             for key in keys {
                 println!("Removing stale custom listener for {}", key);
                 custom_listeners_.remove(&key);
             }
 
-            cl = custom_listeners_.iter().map(|l| (l.0.clone(), l.1.clone())).collect();
+            cl = custom_listeners_
+                .iter()
+                .map(|l| (l.0.clone(), l.1.clone()))
+                .collect();
         }
         for (id, listener) in cl.iter() {
             if let Some(state) = listener.get_game_state().await {
@@ -217,7 +276,7 @@ async fn listener_manager_task(rx: mpsc::Receiver<(ManagerRequest, oneshot::Send
             sim_status.push(location.clone());
         }
 
-        if let Err(_) = sim_status_tx.send(sim_status).await {
+        if sim_status_tx.send(sim_status).await.is_err() {
             return;
         }
 
@@ -225,7 +284,13 @@ async fn listener_manager_task(rx: mpsc::Receiver<(ManagerRequest, oneshot::Send
     }
 }
 
-async fn listener_signaling_task(mut rx: mpsc::Receiver<(ManagerRequest, oneshot::Sender<ManagerResponse>)>, listeners: Arc<Mutex<HashMap<String, Arc<Listener>>>>, custom_listeners: Arc<Mutex<HashMap<String, Arc<Listener>>>>, mut sim_status_rx: mpsc::Receiver<Vec<Location>>, join_packet_name: String) {
+async fn listener_signaling_task(
+    mut rx: mpsc::Receiver<(ManagerRequest, oneshot::Sender<ManagerResponse>)>,
+    listeners: Arc<Mutex<HashMap<String, Arc<Listener>>>>,
+    custom_listeners: Arc<Mutex<HashMap<String, Arc<Listener>>>>,
+    mut sim_status_rx: mpsc::Receiver<Vec<Location>>,
+    join_packet_name: String,
+) {
     let sim_status: Arc<Mutex<Vec<Location>>> = Arc::new(Mutex::new(vec![]));
     loop {
         tokio::select! {
@@ -288,13 +353,13 @@ async fn listener_signaling_task(mut rx: mpsc::Receiver<(ManagerRequest, oneshot
                                 let mut listener_exists = false;
                                 {
                                     let guard = listeners.lock().expect("Failed locking listeners");
-                                    if let Some(_) = guard.get(&listener_id) {
+                                    if guard.get(&listener_id).is_some() {
                                         listener_exists = true;
                                     }
                                 }
                                 if !listener_exists {
                                     let guard = custom_listeners.lock().expect("Failed locking listeners");
-                                    if let Some(_) = guard.get(&listener_id) {
+                                    if guard.get(&listener_id).is_some() {
                                         listener_exists = true;
                                     }
                                 }
@@ -311,16 +376,13 @@ async fn listener_signaling_task(mut rx: mpsc::Receiver<(ManagerRequest, oneshot
                                             // TODO: get the proxies in here
                                             let listener = Listener::new(wss_address, id, join_packet_, None);
                                             if let Some(info) = listener.get_game_state().await {
-                                                if info.mode.unlisted && info.mode.id != String::from("invasion") {
+                                                if info.mode.unlisted && info.mode.id != *"invasion" {
 
                                                     let mut guard = custom_listeners_.lock().expect("Failed locking listeners");
                                                     // We need to re-check because some time has passed and another listener may have been made
-                                                    if guard.contains_key(&format!("{}@{}", id, address)) {
-                                                        let _ = req.1.send(ManagerResponse::NewListenerResult(ListenerAdditionResponse::AlreadyExists));
-                                                        tokio::spawn(async move {listener.stop().await;});
-                                                    } else {
+                                                    if let std::collections::hash_map::Entry::Vacant(e) = guard.entry(format!("{}@{}", id, address)) {
                                                         // Finally, success
-                                                        guard.insert(format!("{}@{}", id, address), Arc::new(listener));
+                                                        e.insert(Arc::new(listener));
                                                         let _ = req.1.send(ManagerResponse::NewListenerResult(ListenerAdditionResponse::Success));
 
                                                         // TODO: Have the sim_status vec be shared between the two threads instead of clumsily adding the new listener here as well
@@ -335,9 +397,12 @@ async fn listener_signaling_task(mut rx: mpsc::Receiver<(ManagerRequest, oneshot
                                                                     modding: None
                                                                 };
                                                                 guard.push(new_location);
-                                                                try_add(&listener_id, &info, &mut guard.as_mut());
+                                                                try_add(&listener_id, &info, guard.as_mut());
                                                             }
                                                         }
+                                                    } else {
+                                                        let _ = req.1.send(ManagerResponse::NewListenerResult(ListenerAdditionResponse::AlreadyExists));
+                                                        tokio::spawn(async move {listener.stop().await;});
                                                     }
                                                 } else {
                                                     tokio::spawn(async move {listener.stop().await;});

@@ -3,11 +3,11 @@ use std::env;
 use crate::utils::read_proxies_file;
 
 mod listener;
-mod utils;
 mod listener_manager;
 mod proxy;
-mod websocket_manager;
 mod server;
+mod utils;
+mod websocket_manager;
 
 #[tokio::main]
 async fn main() {

@@ -4,15 +4,14 @@ use std::fmt::Formatter;
 use futures::{SinkExt, StreamExt};
 use futures_enum::{Sink, Stream};
 use serde::{Deserialize, Serialize};
-use serde_json;
 use serde_json::{json, Value};
 use tokio::net::TcpStream;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::task::JoinHandle;
-use tokio_tungstenite::{client_async_tls, connect_async, MaybeTlsStream, WebSocketStream};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::error::Error as WsError;
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::{client_async_tls, connect_async, MaybeTlsStream, WebSocketStream};
 
 use crate::proxy::{InnerProxy, ProxyStream};
 use crate::utils::{get_ms_since_epoch, translate_color};
@@ -22,7 +21,7 @@ enum ListenerResponse {
     Json(String),
     GameState(GameData),
     None,
-    Bytes(Vec<u8>)
+    Bytes(Vec<u8>),
 }
 
 enum ListenerRequest {
@@ -31,7 +30,7 @@ enum ListenerRequest {
     GetState,
     Shutdown,
     GetRadarPacket,
-    GetTeamPacket
+    GetTeamPacket,
 }
 
 enum ListenerError {
@@ -114,7 +113,7 @@ pub struct GameDataModeSimplified {
     pub(crate) id: String,
     teams: Option<Vec<GameDataTeam>>,
     root_mode: Option<String>,
-    ships: Option<Value>
+    ships: Option<Value>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -138,7 +137,7 @@ pub struct GameData {
     pub(crate) obtained: Option<u64>,
     pub(crate) players: Option<HashMap<u8, GameDataPlayer>>,
     api: Option<ApiData>,
-    pub(crate) name: String
+    pub(crate) name: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -159,7 +158,12 @@ pub struct Listener {
 }
 
 impl Listener {
-    pub fn new(address: String, game_id: u16, join_packet_name: String, proxy: Option<String>) -> Self {
+    pub fn new(
+        address: String,
+        game_id: u16,
+        join_packet_name: String,
+        proxy: Option<String>,
+    ) -> Self {
         let (tx, rx) = mpsc::channel::<(ListenerRequest, oneshot::Sender<ListenerResponse>)>(16);
         Listener {
             tx,
@@ -174,61 +178,49 @@ impl Listener {
 
         let (tx, rx) = oneshot::channel::<ListenerResponse>();
 
-        if let Err(_) = self.tx.send((request, tx)).await {
+        if self.tx.send((request, tx)).await.is_err() {
             return None;
         }
 
         match rx.await {
-            Ok(res) => {
-                Some(res)
-            }
-            Err(_) => {
-                None
-            }
+            Ok(res) => Some(res),
+            Err(_) => None,
         }
     }
 
     pub async fn subscribe(&self) -> Option<broadcast::Receiver<Vec<u8>>> {
-        if let Some(res) = self.req(ListenerRequest::Subscribe).await {
-            if let ListenerResponse::Receiver(receiver) = res {
-                return Some(receiver);
-            }
+        if let Some(ListenerResponse::Receiver(receiver)) =
+            self.req(ListenerRequest::Subscribe).await
+        {
+            return Some(receiver);
         }
         None
     }
 
     pub async fn get_name(&self, id: u8) -> Option<String> {
-        if let Some(res) = self.req(ListenerRequest::GetName(id)).await {
-            if let ListenerResponse::Json(data) = res {
+        if let Some(ListenerResponse::Json(data)) = self.req(ListenerRequest::GetName(id)).await {
                 return Some(data);
-            }
         }
         None
     }
 
     pub async fn get_game_state(&self) -> Option<GameData> {
-        if let Some(res) = self.req(ListenerRequest::GetState).await {
-            if let ListenerResponse::GameState(data) = res {
+        if let Some(ListenerResponse::GameState(data)) = self.req(ListenerRequest::GetState).await {
                 return Some(data);
-            }
         }
         None
     }
 
     pub async fn get_radar_packet(&self) -> Option<Vec<u8>> {
-        if let Some(res) = self.req(ListenerRequest::GetRadarPacket).await {
-            if let ListenerResponse::Bytes(data) = res {
+        if let Some(ListenerResponse::Bytes(data)) = self.req(ListenerRequest::GetRadarPacket).await {
                 return Some(data);
-            }
         }
         None
     }
 
     pub async fn get_team_packet(&self) -> Option<Vec<u8>> {
-        if let Some(res) = self.req(ListenerRequest::GetTeamPacket).await {
-            if let ListenerResponse::Bytes(data) = res {
+        if let Some(ListenerResponse::Bytes(data)) = self.req(ListenerRequest::GetTeamPacket).await {
                 return Some(data);
-            }
         }
         None
     }
@@ -245,40 +237,60 @@ impl Listener {
 #[derive(Stream, Sink)]
 enum MaybeProxiedStream {
     Proxied(WebSocketStream<MaybeTlsStream<ProxyStream>>),
-    Unproxied(WebSocketStream<MaybeTlsStream<TcpStream>>)
+    Unproxied(WebSocketStream<MaybeTlsStream<TcpStream>>),
 }
 
-async fn listener_main(address: String, proxy: Option<String>, game_id: u16, mut rx: mpsc::Receiver<(ListenerRequest, oneshot::Sender<ListenerResponse>)>, join_packet_name: String) -> Result<()> {
+async fn listener_main(
+    address: String,
+    proxy: Option<String>,
+    game_id: u16,
+    mut rx: mpsc::Receiver<(ListenerRequest, oneshot::Sender<ListenerResponse>)>,
+    join_packet_name: String,
+) -> Result<()> {
     let mut request = address.clone().into_client_request()?;
     let headers = request.headers_mut();
     headers.insert("Origin", "https://starblast.io/".parse().unwrap());
 
     let socket: MaybeProxiedStream = match proxy {
         Some(proxy_address) => {
-            let proxy = InnerProxy::from_proxy_str(proxy_address.as_str()).expect("Bad proxy config");
-            let tcp_stream = proxy.connect_async(address.as_str()).await.expect("Failed to create proxy stream");
-            MaybeProxiedStream::Proxied(client_async_tls(request, tcp_stream).await.expect("Failure connecting").0)
+            let proxy =
+                InnerProxy::from_proxy_str(proxy_address.as_str()).expect("Bad proxy config");
+            let tcp_stream = proxy
+                .connect_async(address.as_str())
+                .await
+                .expect("Failed to create proxy stream");
+            MaybeProxiedStream::Proxied(
+                client_async_tls(request, tcp_stream)
+                    .await
+                    .expect("Failure connecting")
+                    .0,
+            )
         }
-        None => {
-            MaybeProxiedStream::Unproxied(connect_async(request).await.expect("Failure connecting").0)
-        }
+        None => MaybeProxiedStream::Unproxied(
+            connect_async(request).await.expect("Failure connecting").0,
+        ),
     };
 
     let (blob_tx, _) = broadcast::channel::<Vec<u8>>(16);
     let (mut socket_tx, mut socket_rx) = socket.split();
 
-    socket_tx.send(Message::Text(json!({
-        "name": join_packet_name,
-        "data": {
-            "spectate": false,
-            "spectate_ship": 1,
-            "player_name": "serverlist+",
-            "hue": 240,
-            "preferred": game_id,
-            "bonus": true,
-            "create": false
-        }
-    }).to_string())).await?;
+    socket_tx
+        .send(Message::Text(
+            json!({
+                "name": join_packet_name,
+                "data": {
+                    "spectate": false,
+                    "spectate_ship": 1,
+                    "player_name": "serverlist+",
+                    "hue": 240,
+                    "preferred": game_id,
+                    "bonus": true,
+                    "create": false
+                }
+            })
+            .to_string(),
+        ))
+        .await?;
 
     let mut welcome_msg: GameData;
     let use_generic_logic: bool;
@@ -298,7 +310,8 @@ async fn listener_main(address: String, proxy: Option<String>, game_id: u16, mut
                         println!("Cannot join {}", game_id);
                         return Err(ListenerError::CannotJoin(game_id));
                     }
-                    let msg: GenericJSONMessage = serde_json::from_str(msg.as_str()).expect("failed parsing msg");
+                    let msg: GenericJSONMessage =
+                        serde_json::from_str(msg.as_str()).expect("failed parsing msg");
                     match msg.name.as_str() {
                         "welcome" => {
                             // This is if the welcome message only contains the version number
@@ -306,22 +319,34 @@ async fn listener_main(address: String, proxy: Option<String>, game_id: u16, mut
                             if msg.data.as_object().unwrap().len() < 2 {
                                 return Err(ListenerError::InvalidVersion);
                             }
-                            welcome_msg = serde_json::from_value(msg.data).expect("failed parsing msg");
+                            welcome_msg =
+                                serde_json::from_value(msg.data).expect("failed parsing msg");
                             welcome_msg.players = Some(HashMap::new());
                             welcome_msg.obtained = Some(get_ms_since_epoch());
 
                             let mode_id = welcome_msg.mode.id.as_str();
                             let root_mode = welcome_msg.mode.root_mode.clone();
-                            if !(mode_id == "team" || (mode_id == "modding" && root_mode == Some("team".parse().unwrap()))) {
-                                println!("Connection successful to {}. Using generic logic", game_id);
+                            if !(mode_id == "team"
+                                || (mode_id == "modding"
+                                    && root_mode == Some("team".parse().unwrap())))
+                            {
+                                println!(
+                                    "Connection successful to {}. Using generic logic",
+                                    game_id
+                                );
                                 use_generic_logic = true;
                                 for i in 1u8..=255 {
-                                    socket_tx.send(Message::Text(json!({
-                                        "name": "get_name",
-                                        "data": {
-                                            "id": i
-                                        }
-                                    }).to_string())).await?;
+                                    socket_tx
+                                        .send(Message::Text(
+                                            json!({
+                                                "name": "get_name",
+                                                "data": {
+                                                    "id": i
+                                                }
+                                            })
+                                            .to_string(),
+                                        ))
+                                        .await?;
                                 }
                             } else {
                                 println!("Connection successful to {}. Using team logic", game_id);
@@ -336,7 +361,7 @@ async fn listener_main(address: String, proxy: Option<String>, game_id: u16, mut
                         }
                     }
                 }
-                _ => return Ok(())
+                _ => return Ok(()),
             }
         }
     }
@@ -345,7 +370,7 @@ async fn listener_main(address: String, proxy: Option<String>, game_id: u16, mut
         live: true,
         provider: String::from("https://starblast.dankdmitron.dev/api"),
         type_: String::from("rich"),
-        version: String::from("2.3")
+        version: String::from("2.3"),
     });
 
     loop {
@@ -431,23 +456,15 @@ async fn listener_main(address: String, proxy: Option<String>, game_id: u16, mut
                                             let rx = if buf[i+1] > 127 {-(!buf[i+1] as i8)} else {buf[i+1] as i8};
                                             let ry = if buf[i+2] > 127 {-(!buf[i+2] as i8)} else {buf[i+2] as i8};
 
-                                            let x: f32 = ((rx as f32)) / 128f32 * (map_size as f32) * 5f32;
-                                            let y: f32 = ((ry as f32)) / 128f32 * (map_size as f32) * 5f32;
+                                            let x: f32 = (rx as f32) / 128f32 * (map_size as f32) * 5f32;
+                                            let y: f32 = (ry as f32) / 128f32 * (map_size as f32) * 5f32;
                                             let score: u32 = (buf[i+4] as u32) + ((buf[i+5] as u32) << 8) + ((buf[i+6] as u32) << 16);
                                             let ship: u16 = 100 * (1 + ((buf[i + 3] as u16) >> 5 & 7)) + 1 + (buf[i+7] as u16);
                                             let alive: bool = buf[i+3] & 1 != 0;
                                             encoded_byte_length += 15;
 
-                                            if players.contains_key(&id) {
-                                                let player = players.get_mut(&id).unwrap();
-                                                player.id = id;
-                                                player.x = Some(x);
-                                                player.y = Some(y);
-                                                player.score = Some(score);
-                                                player.type_ = Some(ship);
-                                                player.alive = Some(alive);
-                                            } else {
-                                                players.insert(id, GameDataPlayer {
+                                            if let std::collections::hash_map::Entry::Vacant(e) = players.entry(id) {
+                                                e.insert(GameDataPlayer {
                                                     id,
                                                     x: Some(x),
                                                     y: Some(y),
@@ -465,29 +482,37 @@ async fn listener_main(address: String, proxy: Option<String>, game_id: u16, mut
                                                         "id": id
                                                     }
                                                 }).to_string())).await?;
+                                            } else {
+                                                let player = players.get_mut(&id).unwrap();
+                                                player.id = id;
+                                                player.x = Some(x);
+                                                player.y = Some(y);
+                                                player.score = Some(score);
+                                                player.type_ = Some(ship);
+                                                player.alive = Some(alive);
                                             }
 
                                             let d = ((i >> 3) * 15) + 1;
                                             packet[d] = id;
-                                            packet[d+1] = (x).to_le_bytes()[0];
-                                            packet[d+2] = (x).to_le_bytes()[1];
-                                            packet[d+3] = (x).to_le_bytes()[2];
-                                            packet[d+4] = (x).to_le_bytes()[3];
-                                            packet[d+5] = (y).to_le_bytes()[0];
-                                            packet[d+6] = (y).to_le_bytes()[1];
-                                            packet[d+7] = (y).to_le_bytes()[2];
-                                            packet[d+8] = (y).to_le_bytes()[3];
-                                            packet[d+9] = (score).to_le_bytes()[0];
-                                            packet[d+10] = (score).to_le_bytes()[1];
-                                            packet[d+11] = (score).to_le_bytes()[2];
-                                            packet[d+12] = (score).to_le_bytes()[3];
+                                            packet[d+1] = x.to_le_bytes()[0];
+                                            packet[d+2] = x.to_le_bytes()[1];
+                                            packet[d+3] = x.to_le_bytes()[2];
+                                            packet[d+4] = x.to_le_bytes()[3];
+                                            packet[d+5] = y.to_le_bytes()[0];
+                                            packet[d+6] = y.to_le_bytes()[1];
+                                            packet[d+7] = y.to_le_bytes()[2];
+                                            packet[d+8] = y.to_le_bytes()[3];
+                                            packet[d+9] = score.to_le_bytes()[0];
+                                            packet[d+10] = score.to_le_bytes()[1];
+                                            packet[d+11] = score.to_le_bytes()[2];
+                                            packet[d+12] = score.to_le_bytes()[3];
 
                                             let mut p = ship;
                                             if alive {
-                                                p = p | (1 << 15);
+                                                p |= 1 << 15;
                                             }
-                                            packet[d+13] = (p).to_le_bytes()[0];
-                                            packet[d+14] = (p).to_le_bytes()[1];
+                                            packet[d+13] = p.to_le_bytes()[0];
+                                            packet[d+14] = p.to_le_bytes()[1];
                                         }
                                         // TODO: make this not use a whole hashset
                                         for i in 0u8..=255 {
@@ -523,7 +548,7 @@ async fn listener_main(address: String, proxy: Option<String>, game_id: u16, mut
 
                                             let mut a = level;
                                             if open {
-                                                a = a | 0xf0;
+                                                a |= 0xf0;
                                             }
                                             packet[i*5+1] = a;
                                             packet[i*5+2] = buf[o+2];

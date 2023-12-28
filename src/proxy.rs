@@ -30,8 +30,12 @@ impl InnerProxy {
 
         let url = match Url::parse(proxy_str) {
             Ok(u) => u,
-            Err(_) => return Err(Error::new(
-                ErrorKind::InvalidInput, "failed to parse proxy url"))
+            Err(_) => {
+                return Err(Error::new(
+                    ErrorKind::InvalidInput,
+                    "failed to parse proxy url",
+                ))
+            }
         };
         let addr = &url[Position::BeforeHost..Position::AfterPort];
 
@@ -39,7 +43,14 @@ impl InnerProxy {
             "http" | "https" => {
                 let mut basic_bytes: Option<Vec<u8>> = None;
                 if let Some(pwd) = url.password() {
-                    let encoded_str = format!("Basic {}", base64::engine::general_purpose::STANDARD.encode(&format!("{}:{}", url.username(), pwd)));
+                    let encoded_str = format!(
+                        "Basic {}",
+                        base64::engine::general_purpose::STANDARD.encode(format!(
+                            "{}:{}",
+                            url.username(),
+                            pwd
+                        ))
+                    );
                     basic_bytes = Some(encoded_str.into_bytes());
                 };
 
@@ -60,44 +71,62 @@ impl InnerProxy {
                 })
             }
 
-            _ => Err(Error::new(ErrorKind::Unsupported, "unknown schema"))
+            _ => Err(Error::new(ErrorKind::Unsupported, "unknown schema")),
         }
     }
 
     pub async fn connect_async(&self, target: &str) -> Result<ProxyStream, Error> {
-        let target_url = Url::parse(target)
-            .unwrap_or_else(|_| panic!("failed to parse target url: {}", target));
+        let target_url =
+            Url::parse(target).unwrap_or_else(|_| panic!("failed to parse target url: {}", target));
         let host = match target_url.host_str() {
             Some(host) => host.to_string(),
-            None => return Err(Error::new(ErrorKind::Unsupported,
-                                          "target host not available")),
+            None => {
+                return Err(Error::new(
+                    ErrorKind::Unsupported,
+                    "target host not available",
+                ))
+            }
         };
         let port = target_url.port().unwrap_or(443);
         match self {
             InnerProxy::Http { auth, url } => {
-                let tcp_stream = TcpStream::connect(url).await
+                let tcp_stream = TcpStream::connect(url)
+                    .await
                     .expect("failed to connect http[s] proxy");
-                Ok(ProxyStream::Http(Self::tunnel(tcp_stream, host, port, auth).await.unwrap()))
+                Ok(ProxyStream::Http(
+                    Self::tunnel(tcp_stream, host, port, auth).await.unwrap(),
+                ))
             }
             InnerProxy::Socks { auth, url } => {
                 let stream = match auth {
-                    Some(au) => Socks5Stream::connect_with_password(
-                        url.as_str(), (host.as_str(), port), &au.0, &au.1).await,
+                    Some(au) => {
+                        Socks5Stream::connect_with_password(
+                            url.as_str(),
+                            (host.as_str(), port),
+                            &au.0,
+                            &au.1,
+                        )
+                        .await
+                    }
                     None => Socks5Stream::connect(url.as_str(), (host.as_str(), port)).await,
                 };
                 match stream {
                     Ok(s) => Ok(ProxyStream::Socks(s)),
-                    Err(_) => Err(Error::new(ErrorKind::NotConnected, "failed to create socks proxy stream"))
+                    Err(_) => Err(Error::new(
+                        ErrorKind::NotConnected,
+                        "failed to create socks proxy stream",
+                    )),
                 }
             }
         }
     }
 
-    async fn tunnel(mut conn: TcpStream,
-                    host: String,
-                    port: u16,
-                    auth: &Option<Vec<u8>>) -> Result<TcpStream, Error>
-    {
+    async fn tunnel(
+        mut conn: TcpStream,
+        host: String,
+        port: u16,
+        auth: &Option<Vec<u8>>,
+    ) -> Result<TcpStream, Error> {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let mut buf = format!(
             "\
@@ -105,7 +134,8 @@ impl InnerProxy {
          Host: {0}:{1}\r\n\
          ",
             host, port
-        ).into_bytes();
+        )
+        .into_bytes();
 
         if let Some(au) = auth {
             buf.extend_from_slice(b"Proxy-Authorization: ");
@@ -122,7 +152,10 @@ impl InnerProxy {
         loop {
             let n = conn.read(&mut buf[pos..]).await?;
             if n == 0 {
-                return Err(Error::new(ErrorKind::UnexpectedEof, "0 bytes in reading tunnel"));
+                return Err(Error::new(
+                    ErrorKind::UnexpectedEof,
+                    "0 bytes in reading tunnel",
+                ));
             }
             pos += n;
 
@@ -132,10 +165,16 @@ impl InnerProxy {
                     return Ok(conn);
                 }
                 if pos == buf.len() {
-                    return Err(Error::new(ErrorKind::UnexpectedEof, "proxy headers too long than tunnel"));
+                    return Err(Error::new(
+                        ErrorKind::UnexpectedEof,
+                        "proxy headers too long than tunnel",
+                    ));
                 }
             } else if recvd.starts_with(b"HTTP/1.1 407") {
-                return Err(Error::new(ErrorKind::PermissionDenied, "proxy authentication required"));
+                return Err(Error::new(
+                    ErrorKind::PermissionDenied,
+                    "proxy authentication required",
+                ));
             } else {
                 return Err(Error::new(ErrorKind::Other, "unsuccessful tunnel"));
             }
@@ -150,9 +189,11 @@ pub enum ProxyStream {
 }
 
 impl AsyncRead for ProxyStream {
-    fn poll_read(self: Pin<&mut Self>,
-                 cx: &mut Context<'_>,
-                 buf: &mut ReadBuf<'_>) -> Poll<std::io::Result<()>> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
         match self.get_mut() {
             ProxyStream::Http(s) => Pin::new(s).poll_read(cx, buf),
             ProxyStream::Socks(s) => Pin::new(s).poll_read(cx, buf),
@@ -161,9 +202,11 @@ impl AsyncRead for ProxyStream {
 }
 
 impl AsyncWrite for ProxyStream {
-    fn poll_write(self: Pin<&mut Self>,
-                  cx: &mut Context<'_>,
-                  buf: &[u8]) -> Poll<Result<usize, Error>> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<Result<usize, Error>> {
         match self.get_mut() {
             ProxyStream::Http(s) => Pin::new(s).poll_write(cx, buf),
             ProxyStream::Socks(s) => Pin::new(s).poll_write(cx, buf),
